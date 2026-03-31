@@ -72,7 +72,10 @@ void DequantizeLinear::print(std::ostream& dst) const
 	}
 
 	std::string param_index;
-	if (x_scale->is_scalar()) {
+	// ONNX allows x_scale/x_zero_point to be a 1-element tensor (shape [1]).
+	// Treat that case like a scalar to avoid emitting out-of-range indices
+	// (e.g. default axis=1 for rank-1 inputs) and undefined loop variables.
+	if (x_scale->is_scalar() || x_scale->data_num_elem() == 1 || axis >= (int)x->rank()) {
 		param_index = "[0]";
 	}
 	else {
