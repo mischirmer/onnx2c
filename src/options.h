@@ -17,6 +17,7 @@ struct onnx2c_opts {
 	bool only_init = false;
 	bool opt_unionize = true;
 	bool opt_fold_casts = true;
+	bool conv_im2col = false; // Emit Conv as im2col + dot-product (matmul-style)
 /*
  * logging levels are
  * cmd line     aixlog     Use

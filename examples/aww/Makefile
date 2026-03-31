@@ -6,6 +6,7 @@ CFLAGS ?= -O2 -std=c99
 CXXFLAGS ?= -O2 -std=c++17
 
 ONNX2C ?= ../../build/onnx2c
+ONNX2C_FLAGS ?= --conv-im2col
 TFLITE_INT8 ?= ../../../kws_ref_model.tflite
 
 FP32_ONNX ?= kws_ref_model_full_float32_from_savedmodel.onnx
@@ -41,6 +42,11 @@ int8: run_int8
 gen_fp32: $(FP32_C)
 gen_int8: $(INT8_C)
 
+FLAGS_STAMP := .onnx2c_flags.stamp
+
+$(FLAGS_STAMP):
+	@echo "$(ONNX2C_FLAGS)" > $(FLAGS_STAMP)
+
 run_fp32: $(FP32_O) $(RUNNER_CPP)
 	$(CXX) $(CXXFLAGS) $(RUNNER_CPP) $(FP32_O) -o $@ $(RUN_DEFS)
 
@@ -54,11 +60,11 @@ $(INT8_O): $(INT8_C)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Auto-generate C from ONNX if the file is missing.
-$(FP32_C): $(FP32_ONNX)
-	$(ONNX2C) $(FP32_ONNX) > $(FP32_C)
+$(FP32_C): $(FP32_ONNX) $(ONNX2C) $(FLAGS_STAMP)
+	$(ONNX2C) $(ONNX2C_FLAGS) $(FP32_ONNX) > $(FP32_C)
 
-$(INT8_C): $(INT8_ONNX)
-	$(ONNX2C) $(INT8_ONNX) > $(INT8_C)
+$(INT8_C): $(INT8_ONNX) $(ONNX2C) $(FLAGS_STAMP)
+	$(ONNX2C) $(ONNX2C_FLAGS) $(INT8_ONNX) > $(INT8_C)
 
 # Use the int8 TFLite model's input quantization parameters to dequantize the MLPerf bins
 # into float input expected by the generated ONNX models.
@@ -70,4 +76,4 @@ RUN_DEFS := $(shell $(PY) -c "import os,sys; p='$(TFLITE_INT8)'; \
   print(f'-DINPUT_SCALE={q[0]} -DINPUT_ZERO_POINT={q[1]}')")
 
 clean:
-	rm -f run_fp32 run_int8 $(FP32_O) $(INT8_O)
+	rm -f run_fp32 run_int8 $(FP32_O) $(INT8_O) $(FLAGS_STAMP)
