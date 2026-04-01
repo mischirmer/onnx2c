@@ -302,7 +302,7 @@ class QLinearConv : public Node {
 		INDT_4 << "for( uint32_t m0=" << m_begin << "; m0<" << m_end << "; m0+=MTILE ) {" << std::endl;
 		INDT_5 << "uint32_t m1 = MIN(m0 + MTILE, (uint32_t)(" << m_end << "));" << std::endl;
 
-		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm;
+		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || options.freivalds_gemm;
 		if (options.abyzft_gemm) {
 			INDT_5 << "/* AByzFT: randomized scaling (per A-row, per B-column) */" << std::endl;
 			INDT_5 << "uint32_t abyzft_state = (uint32_t)(LAYER_ID ^ (uint32_t)b ^ (uint32_t)o0";
@@ -314,28 +314,34 @@ class QLinearConv : public Node {
 		}
 
 		if (checksum_enabled) {
-			INDT_5 << "/* ABFT (integer domain): build row-checksum of B over output-channel tile */" << std::endl;
-			INDT_5 << "int32_t b_rs[" << K << "];" << std::endl;
-			INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) b_rs[kk2] = 0;" << std::endl;
-			INDT_5 << "int64_t bias_sum = 0;" << std::endl;
-			INDT_5 << "for( uint32_t m=m0; m<m1; m++ ) {" << std::endl;
-			if (get_number_of_inputs() >= 9)
-				INDT_5 << "bias_sum += (int64_t)bias[m];" << std::endl;
-			INDT_5 << "uint32_t kk2 = 0;" << std::endl;
-			INDT_5 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
-			INDT_5 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
-			if (n_data_dims == 1) {
-				INDT_5 << "b_rs[kk2++] += ((int32_t)w[m][c0][kk0] - (int32_t)w_zero_point" << w_zero_idx << ");" << std::endl;
+			if (options.freivalds_gemm) {
+				INDT_5 << "/* Freivalds: store accumulator tile for multiple checks */" << std::endl;
+				INDT_5 << "int32_t acc_tile[" << mtile << "];" << std::endl;
 			}
 			else {
-				INDT_5 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
-				INDT_5 << "b_rs[kk2++] += ((int32_t)w[m][c0][kk0][kk1] - (int32_t)w_zero_point" << w_zero_idx << ");" << std::endl;
+				INDT_5 << "/* ABFT (integer domain): build row-checksum of B over output-channel tile */" << std::endl;
+				INDT_5 << "int32_t b_rs[" << K << "];" << std::endl;
+				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) b_rs[kk2] = 0;" << std::endl;
+				INDT_5 << "int64_t bias_sum = 0;" << std::endl;
+				INDT_5 << "for( uint32_t m=m0; m<m1; m++ ) {" << std::endl;
+				if (get_number_of_inputs() >= 9)
+					INDT_5 << "bias_sum += (int64_t)bias[m];" << std::endl;
+				INDT_5 << "uint32_t kk2 = 0;" << std::endl;
+				INDT_5 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
+				INDT_5 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
+				if (n_data_dims == 1) {
+					INDT_5 << "b_rs[kk2++] += ((int32_t)w[m][c0][kk0] - (int32_t)w_zero_point" << w_zero_idx << ");" << std::endl;
+				}
+				else {
+					INDT_5 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
+					INDT_5 << "b_rs[kk2++] += ((int32_t)w[m][c0][kk0][kk1] - (int32_t)w_zero_point" << w_zero_idx << ");" << std::endl;
+					INDT_5 << "}" << std::endl;
+				}
 				INDT_5 << "}" << std::endl;
+				INDT_5 << "}" << std::endl;
+				INDT_5 << "} /* m checksum */" << std::endl;
+				INDT_5 << "int64_t sumC = 0;" << std::endl;
 			}
-			INDT_5 << "}" << std::endl;
-			INDT_5 << "}" << std::endl;
-			INDT_5 << "} /* m checksum */" << std::endl;
-			INDT_5 << "int64_t sumC = 0;" << std::endl;
 		}
 
 		INDT_5 << "for( uint32_t m=m0; m<m1; m++ ) {" << std::endl;
@@ -429,7 +435,12 @@ class QLinearConv : public Node {
 		}
 
 		if (checksum_enabled) {
-			INDT_5 << "sumC += (int64_t)acc32;" << std::endl;
+			if (options.freivalds_gemm) {
+				INDT_5 << "acc_tile[m-m0] = acc32;" << std::endl;
+			}
+			else {
+				INDT_5 << "sumC += (int64_t)acc32;" << std::endl;
+			}
 		}
 
 		std::string float_dtype = get_input_tensor(1)->data_type_str();
@@ -447,10 +458,49 @@ class QLinearConv : public Node {
 		INDT_5 << "} /* m */" << std::endl;
 
 		if (checksum_enabled) {
-			INDT_5 << "/* ABFT verify (integer domain): sum(C_tile) == A * (B_tile 1) */" << std::endl;
-			INDT_5 << "int64_t pred = bias_sum;" << std::endl;
-			INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += (int64_t)col[kk2] * (int64_t)b_rs[kk2];" << std::endl;
-			INDT_5 << "if( sumC != pred ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; }" << std::endl;
+			if (options.freivalds_gemm) {
+				INDT_5 << "/* Freivalds verify (integer domain): r^T C_tile == (A^T (B_tile r)) + bias */" << std::endl;
+				INDT_5 << "for( uint32_t chk=0; chk<" << (options.freivalds_checks ? options.freivalds_checks : 1) << "u; chk++ ) {" << std::endl;
+				INDT_5 << "uint32_t freivalds_state = (uint32_t)(0x9E3779B9u ^ LAYER_ID ^ (uint32_t)b ^ (uint32_t)o0";
+				if (n_data_dims == 2) dst << " ^ (uint32_t)o1";
+				dst << " ^ (uint32_t)m0 ^ (uint32_t)(chk*0x85EBCA6Bu));" << std::endl;
+				INDT_5 << "uint32_t r_vec[" << mtile << "];" << std::endl;
+				INDT_5 << "uint32_t r_any = 0;" << std::endl;
+				INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) { r_vec[mi] = ABYZFT_randbit(&freivalds_state); r_any |= r_vec[mi]; }" << std::endl;
+				INDT_5 << "if( !r_any && (m1>m0) ) r_vec[0] = 1u;" << std::endl;
+				INDT_5 << "int32_t b_rs[" << K << "];" << std::endl;
+				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) b_rs[kk2] = 0;" << std::endl;
+				INDT_5 << "int64_t bias_sum = 0;" << std::endl;
+				INDT_5 << "int64_t sumC = 0;" << std::endl;
+				INDT_5 << "for( uint32_t m=m0; m<m1; m++ ) if( r_vec[m-m0] ) {" << std::endl;
+				if (get_number_of_inputs() >= 9)
+					INDT_5 << "bias_sum += (int64_t)bias[m];" << std::endl;
+				INDT_5 << "sumC += (int64_t)acc_tile[m-m0];" << std::endl;
+				INDT_5 << "uint32_t kk2 = 0;" << std::endl;
+				INDT_5 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
+				INDT_5 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
+				if (n_data_dims == 1) {
+					INDT_5 << "b_rs[kk2++] += ((int32_t)w[m][c0][kk0] - (int32_t)w_zero_point" << w_zero_idx << ");" << std::endl;
+				}
+				else {
+					INDT_5 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
+					INDT_5 << "b_rs[kk2++] += ((int32_t)w[m][c0][kk0][kk1] - (int32_t)w_zero_point" << w_zero_idx << ");" << std::endl;
+					INDT_5 << "}" << std::endl;
+				}
+				INDT_5 << "}" << std::endl;
+				INDT_5 << "}" << std::endl;
+				INDT_5 << "}" << std::endl;
+				INDT_5 << "int64_t pred = bias_sum;" << std::endl;
+				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += (int64_t)col[kk2] * (int64_t)b_rs[kk2];" << std::endl;
+				INDT_5 << "if( sumC != pred ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; break; }" << std::endl;
+				INDT_5 << "}" << std::endl;
+			}
+			else {
+				INDT_5 << "/* ABFT verify (integer domain): sum(C_tile) == A * (B_tile 1) */" << std::endl;
+				INDT_5 << "int64_t pred = bias_sum;" << std::endl;
+				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += (int64_t)col[kk2] * (int64_t)b_rs[kk2];" << std::endl;
+				INDT_5 << "if( sumC != pred ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; }" << std::endl;
+			}
 		}
 
 		INDT_4 << "} /* m0 */" << std::endl;

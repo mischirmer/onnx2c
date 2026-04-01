@@ -127,6 +127,8 @@ void parse_cmdline_options(int argc, const char* argv[])
 	args::Flag convIm2col(parser, "conv-im2col", "Emit Conv as im2col + dot-product (matmul-style)", {"conv-im2col"});
 	args::Flag abftGemm(parser, "abft-gemm", "Add ABFT checks for gemm-like dot-products in Conv", {"abft-gemm"});
 	args::Flag abyzftGemm(parser, "abyzft-gemm", "AByzFT: randomized scaling + ABFT checks for gemm-like dot-products", {"abyzft-gemm"});
+	args::Flag freivaldsGemm(parser, "freivalds-gemm", "Freivalds check (random {0,1} vector) for gemm-like dot-products", {"freivalds-gemm"});
+	args::ValueFlag<uint32_t> freivaldsChecks(parser, "N", "Number of independent Freivalds checks (default: 1)", {"freivalds-checks"});
 	args::ValueFlag<uint32_t> abftMtile(parser, "N", "ABFT output-channel tile size (default: 8)", {"abft-mtile"});
 	args::ValueFlag<float> abftEps(parser, "eps", "ABFT relative tolerance (default: 1e-3)", {"abft-eps"});
 	args::ValueFlagList<std::string> define(parser, "dim:size", "Define graph input dimension. Can be given multiple times", {'d', "define"});
@@ -187,6 +189,13 @@ void parse_cmdline_options(int argc, const char* argv[])
 	}
 	if (abyzftGemm) {
 		options.abyzft_gemm = true;
+	}
+	if (freivaldsGemm) {
+		options.freivalds_gemm = true;
+	}
+	if (freivaldsChecks) {
+		options.freivalds_checks = args::get(freivaldsChecks);
+		if (options.freivalds_checks == 0) options.freivalds_checks = 1;
 	}
 	if (abftMtile) {
 		options.abft_mtile = args::get(abftMtile);

@@ -37,8 +37,10 @@ void Graph::print_source(std::ostream& dst, const std::string& interface_func_na
 	dst << "uint32_t FAULT_INJECTIONS = 0;" << std::endl;
 	dst << std::endl;
 
-	// AByzFT helpers (deterministic PRNG for per-tile scaling factors).
-	if (options.abyzft_gemm) {
+	// Deterministic PRNG helpers (used by AByzFT / Freivalds).
+	// Only emit the helpers that are actually needed by the enabled mechanism(s),
+	// to keep generated code minimal and avoid confusion in analyses.
+	if (options.abyzft_gemm || options.freivalds_gemm) {
 		dst << "static inline uint32_t ABYZFT_xorshift32(uint32_t* s) {" << std::endl;
 		dst << "\tuint32_t x = *s;" << std::endl;
 		dst << "\tx ^= x << 13;" << std::endl;
@@ -47,10 +49,17 @@ void Graph::print_source(std::ostream& dst, const std::string& interface_func_na
 		dst << "\t*s = x;" << std::endl;
 		dst << "\treturn x;" << std::endl;
 		dst << "}" << std::endl;
-		dst << "static inline float ABYZFT_rand01(uint32_t* s) {" << std::endl;
-		dst << "\t// [0,1) using 24 bits" << std::endl;
-		dst << "\treturn (float)(ABYZFT_xorshift32(s) & 0x00FFFFFFu) / 16777216.0f;" << std::endl;
-		dst << "}" << std::endl;
+		if (options.abyzft_gemm) {
+			dst << "static inline float ABYZFT_rand01(uint32_t* s) {" << std::endl;
+			dst << "\t// [0,1) using 24 bits" << std::endl;
+			dst << "\treturn (float)(ABYZFT_xorshift32(s) & 0x00FFFFFFu) / 16777216.0f;" << std::endl;
+			dst << "}" << std::endl;
+		}
+		if (options.freivalds_gemm) {
+			dst << "static inline uint32_t ABYZFT_randbit(uint32_t* s) {" << std::endl;
+			dst << "\treturn ABYZFT_xorshift32(s) & 1u;" << std::endl;
+			dst << "}" << std::endl;
+		}
 		dst << std::endl;
 	}
 

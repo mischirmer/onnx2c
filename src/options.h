@@ -20,6 +20,8 @@ struct onnx2c_opts {
 	bool conv_im2col = false; // Emit Conv as im2col + dot-product (matmul-style)
 	bool abft_gemm = false;   // Add ABFT checks around gemm-like dot-products
 	bool abyzft_gemm = false; // AByzFT: randomized scaling + ABFT checks
+	bool freivalds_gemm = false; // Freivalds check (random {0,1} vector) around gemm-like dot-products
+	uint32_t freivalds_checks = 1; // Number of independent Freivalds checks (default: 1)
 	uint32_t abft_mtile = 8;  // Output-channel tile size for ABFT
 	float abft_eps = 1e-3f;   // Relative tolerance for checksum verification
 /*

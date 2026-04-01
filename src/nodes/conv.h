@@ -111,7 +111,7 @@ class Conv : public SpatialFilter {
 		INDT_4 << "for( uint32_t m0=" << m_begin << "; m0<" << m_end << "; m0+=MTILE ) {" << std::endl;
 		INDT_5 << "uint32_t m1 = MIN(m0 + MTILE, (uint32_t)(" << m_end << "));" << std::endl;
 
-		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm;
+		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || options.freivalds_gemm;
 		if (options.abyzft_gemm) {
 			INDT_5 << "/* AByzFT: randomized scaling (per A-row, per B-column) */" << std::endl;
 			INDT_5 << "uint32_t abyzft_state = (uint32_t)(LAYER_ID ^ (uint32_t)b ^ (uint32_t)o0";
@@ -123,29 +123,35 @@ class Conv : public SpatialFilter {
 		}
 
 		if (checksum_enabled) {
-			INDT_5 << "/* ABFT: build row-checksum of B (Kx1) over output-channel tile */" << std::endl;
-			INDT_5 << "float b_rs[" << K << "];" << std::endl;
-			INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) b_rs[kk2] = 0;" << std::endl;
-			INDT_5 << "float bias_sum = 0;" << std::endl;
-			INDT_5 << "for( uint32_t m=m0; m<m1; m++ ) {" << std::endl;
-			if (get_number_of_inputs() >= 3)
-				INDT_5 << "bias_sum += bias[m];" << std::endl;
-
-			INDT_5 << "uint32_t kk2 = 0;" << std::endl;
-			INDT_5 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
-			INDT_5 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
-			if (n_data_dims == 1) {
-				INDT_5 << "b_rs[kk2++] += w[m][c0][kk0];" << std::endl;
+			if (options.freivalds_gemm) {
+				INDT_5 << "/* Freivalds: store accumulator tile for multiple checks */" << std::endl;
+				INDT_5 << "float acc_tile[" << mtile << "];" << std::endl;
 			}
 			else {
-				INDT_5 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
-				INDT_5 << "b_rs[kk2++] += w[m][c0][kk0][kk1];" << std::endl;
+				INDT_5 << "/* Build checksum vector of B (Kx1) over output-channel tile */" << std::endl;
+				INDT_5 << "float b_rs[" << K << "];" << std::endl;
+				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) b_rs[kk2] = 0;" << std::endl;
+				INDT_5 << "float bias_sum = 0;" << std::endl;
+				INDT_5 << "for( uint32_t m=m0; m<m1; m++ ) {" << std::endl;
+				if (get_number_of_inputs() >= 3)
+					INDT_5 << "bias_sum += bias[m];" << std::endl;
+
+				INDT_5 << "uint32_t kk2 = 0;" << std::endl;
+				INDT_5 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
+				INDT_5 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
+				if (n_data_dims == 1) {
+					INDT_5 << "b_rs[kk2++] += w[m][c0][kk0];" << std::endl;
+				}
+				else {
+					INDT_5 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
+					INDT_5 << "b_rs[kk2++] += w[m][c0][kk0][kk1];" << std::endl;
+					INDT_5 << "}" << std::endl;
+				}
 				INDT_5 << "}" << std::endl;
+				INDT_5 << "}" << std::endl;
+				INDT_5 << "} /* m checksum */" << std::endl;
+				INDT_5 << "float sumC = 0;" << std::endl;
 			}
-			INDT_5 << "}" << std::endl;
-			INDT_5 << "}" << std::endl;
-			INDT_5 << "} /* m checksum */" << std::endl;
-			INDT_5 << "float sumC = 0;" << std::endl;
 		}
 
 		INDT_5 << "for( uint32_t m=m0; m<m1; m++ ) {" << std::endl;
@@ -249,22 +255,68 @@ class Conv : public SpatialFilter {
 			INDT_5 << "y[b][m][o0][o1] = acc;" << std::endl;
 
 		if (checksum_enabled) {
-			INDT_5 << "sumC += acc;" << std::endl;
+			if (options.freivalds_gemm) {
+				INDT_5 << "acc_tile[m-m0] = acc;" << std::endl;
+			}
+			else {
+				INDT_5 << "sumC += acc;" << std::endl;
+			}
 		}
 
 		INDT_5 << "} /* m */" << std::endl;
 
 		if (checksum_enabled) {
-			INDT_5 << "/* ABFT verify: sum(C_tile) == (1^T A_tile) * (B_tile 1) */" << std::endl;
-			INDT_5 << "float pred = bias_sum;" << std::endl;
-			INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += col[kk2] * b_rs[kk2];" << std::endl;
-			INDT_5 << "float diff = fabsf(sumC - pred);" << std::endl;
-			INDT_5 << "float tol = " << options.abft_eps << "f * (fabsf(pred) + 1.0f);" << std::endl;
-			INDT_5 << "if( diff > tol ) {" << std::endl;
-			INDT_5 << "TAMPERING_DETECTED = true;" << std::endl;
-			INDT_5 << "TAMPERING_DETECTIONS++;" << std::endl;
-			INDT_5 << "/* ABFT failure (tile m0..m1-1 at this output position) */" << std::endl;
-			INDT_5 << "}" << std::endl;
+			if (options.freivalds_gemm) {
+				INDT_5 << "/* Freivalds verify: r^T C_tile == (A^T (B_tile r)) + bias */" << std::endl;
+				INDT_5 << "for( uint32_t chk=0; chk<" << (options.freivalds_checks ? options.freivalds_checks : 1) << "u; chk++ ) {" << std::endl;
+				INDT_5 << "uint32_t freivalds_state = (uint32_t)(0x9E3779B9u ^ LAYER_ID ^ (uint32_t)b ^ (uint32_t)o0";
+				if (n_data_dims == 2) dst << " ^ (uint32_t)o1";
+				dst << " ^ (uint32_t)m0 ^ (uint32_t)(chk*0x85EBCA6Bu));" << std::endl;
+				INDT_5 << "uint32_t r_vec[" << mtile << "];" << std::endl;
+				INDT_5 << "uint32_t r_any = 0;" << std::endl;
+				INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) { r_vec[mi] = ABYZFT_randbit(&freivalds_state); r_any |= r_vec[mi]; }" << std::endl;
+				INDT_5 << "if( r_any == 0 ) r_vec[0] = 1u;" << std::endl;
+				INDT_5 << "float b_rs[" << K << "];" << std::endl;
+				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) b_rs[kk2] = 0;" << std::endl;
+				INDT_5 << "float bias_sum = 0;" << std::endl;
+				INDT_5 << "float sumC = 0;" << std::endl;
+				INDT_5 << "for( uint32_t m=m0; m<m1; m++ ) if( r_vec[m-m0] ) {" << std::endl;
+				if (get_number_of_inputs() >= 3)
+					INDT_5 << "bias_sum += bias[m];" << std::endl;
+				INDT_5 << "sumC += acc_tile[m-m0];" << std::endl;
+				INDT_5 << "uint32_t kk2 = 0;" << std::endl;
+				INDT_5 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
+				INDT_5 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
+				if (n_data_dims == 1) {
+					INDT_5 << "b_rs[kk2++] += w[m][c0][kk0];" << std::endl;
+				}
+				else {
+					INDT_5 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
+					INDT_5 << "b_rs[kk2++] += w[m][c0][kk0][kk1];" << std::endl;
+					INDT_5 << "}" << std::endl;
+				}
+				INDT_5 << "}" << std::endl;
+				INDT_5 << "}" << std::endl;
+				INDT_5 << "}" << std::endl;
+				INDT_5 << "float pred = bias_sum;" << std::endl;
+				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += col[kk2] * b_rs[kk2];" << std::endl;
+				INDT_5 << "float diff = fabsf(sumC - pred);" << std::endl;
+				INDT_5 << "float tol = " << options.abft_eps << "f * (fabsf(pred) + 1.0f);" << std::endl;
+				INDT_5 << "if( diff > tol ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; break; }" << std::endl;
+				INDT_5 << "}" << std::endl;
+			}
+			else {
+				INDT_5 << "/* Verify checksum */" << std::endl;
+				INDT_5 << "float pred = bias_sum;" << std::endl;
+				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += col[kk2] * b_rs[kk2];" << std::endl;
+				INDT_5 << "float diff = fabsf(sumC - pred);" << std::endl;
+				INDT_5 << "float tol = " << options.abft_eps << "f * (fabsf(pred) + 1.0f);" << std::endl;
+				INDT_5 << "if( diff > tol ) {" << std::endl;
+				INDT_5 << "TAMPERING_DETECTED = true;" << std::endl;
+				INDT_5 << "TAMPERING_DETECTIONS++;" << std::endl;
+				INDT_5 << "/* ABFT failure (tile m0..m1-1 at this output position) */" << std::endl;
+				INDT_5 << "}" << std::endl;
+			}
 		}
 
 		INDT_4 << "} /* m0 */" << std::endl;
