@@ -18,6 +18,9 @@ struct onnx2c_opts {
 	bool opt_unionize = true;
 	bool opt_fold_casts = true;
 	bool conv_im2col = false; // Emit Conv as im2col + dot-product (matmul-style)
+	bool abft_gemm = false;   // Add ABFT checks around gemm-like dot-products
+	uint32_t abft_mtile = 8;  // Output-channel tile size for ABFT
+	float abft_eps = 1e-3f;   // Relative tolerance for checksum verification
 /*
  * logging levels are
  * cmd line     aixlog     Use

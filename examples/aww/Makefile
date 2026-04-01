@@ -10,7 +10,7 @@ ONNX2C_FLAGS ?= --conv-im2col
 TFLITE_INT8 ?= ../../../kws_ref_model.tflite
 
 FP32_ONNX ?= kws_ref_model_full_float32_from_savedmodel.onnx
-INT8_ONNX ?= kws_ref_model_full_float32_from_savedmodel.int8.qdq.onnx
+INT8_ONNX ?= kws_ref_model_full_float32_from_savedmodel.int8.qop.onnx
 
 FP32_C ?= resnet_fp32.c
 INT8_C ?= resnet_i8.c

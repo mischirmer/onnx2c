@@ -21,6 +21,7 @@ class Node {
 	bool isResolved;       // has this node been visited in current compilation step.
 	std::string onnx_name; //	ONNX name of the individual node
 	std::string op_name;   //	ONNX name of node type
+	uint32_t node_id = 0;  //	Stable id assigned by Graph in parse order
 	static int64_t onnx_ir_version;
 	virtual ~Node() {}
 

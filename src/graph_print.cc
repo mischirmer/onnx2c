@@ -22,6 +22,73 @@ void Graph::print_source(std::ostream& dst, const std::string& interface_func_na
 	dst << std::endl;
 	print_includes(dst);
 	dst << std::endl;
+	// ABFT status globals (updated by generated ABFT checks when enabled).
+	dst << "volatile bool TAMPERING_DETECTED = false;" << std::endl;
+	dst << "uint32_t TAMPERING_DETECTIONS = 0;" << std::endl;
+	// Fault injection controls (used by generated kernels when enabled).
+	dst << "volatile bool FAULT_ENABLED = false;" << std::endl;
+	dst << "uint32_t FAULT_MODEL = 0; /* 0=single_point, 1=trivial, 2=checkered */" << std::endl;
+	dst << "uint32_t FAULT_LAYER_ID = 0;" << std::endl;
+	dst << "uint32_t FAULT_INDEX = 0;" << std::endl;
+	dst << "float FAULT_VALUE = 0.0f;" << std::endl;
+	dst << "uint32_t FAULT_N = 12; /* used by some fault models */" << std::endl;
+	dst << "uint32_t FAULT_STRIDE = 2; /* used by some fault models */" << std::endl;
+	dst << "volatile bool FAULT_INJECTED = false;" << std::endl;
+	dst << "uint32_t FAULT_INJECTIONS = 0;" << std::endl;
+	dst << std::endl;
+
+	// Minimal metadata for fault-injection sweeps (selected compute-heavy layers).
+	// The runtime can iterate these to run per-layer sweeps without parsing C/ONNX.
+	{
+		std::vector<const Node*> sweep_nodes;
+		for (const auto* n : nodes) {
+			if (!n) continue;
+			// Sweep only compute-heavy layers where faults are meaningful:
+			// - Conv / depthwise conv: Conv, QLinearConv, ConvInteger
+			// - Dense: Gemm, QGemm, MatMul, QLinearMatMul
+			if (n->op_name == "Conv" ||
+			    n->op_name == "QLinearConv" ||
+			    n->op_name == "ConvInteger" ||
+			    n->op_name == "Gemm" ||
+			    n->op_name == "QGemm" ||
+			    n->op_name == "MatMul" ||
+			    n->op_name == "QLinearMatMul") {
+				sweep_nodes.push_back(n);
+			}
+		}
+		dst << "const uint32_t SWEEP_LAYER_COUNT = " << sweep_nodes.size() << "u;" << std::endl;
+		dst << "const uint32_t SWEEP_LAYER_IDS[" << sweep_nodes.size() << "] = {";
+		for (size_t i = 0; i < sweep_nodes.size(); i++) {
+			if (i) dst << ", ";
+			dst << sweep_nodes[i]->node_id << "u";
+		}
+		dst << "};" << std::endl;
+		dst << "const char* SWEEP_LAYER_OPS[" << sweep_nodes.size() << "] = {";
+		for (size_t i = 0; i < sweep_nodes.size(); i++) {
+			if (i) dst << ", ";
+			dst << "\"" << sweep_nodes[i]->op_name << "\"";
+		}
+		dst << "};" << std::endl;
+		dst << "const uint64_t SWEEP_LAYER_OUT_ELEMS[" << sweep_nodes.size() << "] = {";
+		for (size_t i = 0; i < sweep_nodes.size(); i++) {
+			if (i) dst << ", ";
+			uint64_t elems = 1;
+			const Tensor* out0 = sweep_nodes[i]->get_output_tensor(0);
+			if (!out0) {
+				elems = 0;
+			}
+			else {
+				for (int d : out0->data_dim) {
+					if (d <= 0) { elems = 0; break; }
+					elems *= (uint64_t)d;
+				}
+			}
+			dst << elems << "ull";
+		}
+		dst << "};" << std::endl;
+	}
+	dst << std::endl;
+
 	print_global_tensors(dst);
 	dst << std::endl;
 	print_functions(dst);

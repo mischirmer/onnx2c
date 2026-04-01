@@ -125,6 +125,9 @@ void parse_cmdline_options(int argc, const char* argv[])
 	args::Flag externInit(parser, "extern-init", "Declare initialized tensors as extern globals", {'e', "extern-init"});
 	args::Flag onlyInit(parser, "only-init", "Only generate initialized tensors (for use with --extern-init)", {'i', "only-init"});
 	args::Flag convIm2col(parser, "conv-im2col", "Emit Conv as im2col + dot-product (matmul-style)", {"conv-im2col"});
+	args::Flag abftGemm(parser, "abft-gemm", "Add ABFT checks for gemm-like dot-products in Conv", {"abft-gemm"});
+	args::ValueFlag<uint32_t> abftMtile(parser, "N", "ABFT output-channel tile size (default: 8)", {"abft-mtile"});
+	args::ValueFlag<float> abftEps(parser, "eps", "ABFT relative tolerance (default: 1e-3)", {"abft-eps"});
 	args::ValueFlagList<std::string> define(parser, "dim:size", "Define graph input dimension. Can be given multiple times", {'d', "define"});
 	args::ValueFlag<int> loglevel(parser, "level", "Logging verbosity. 0(none)-4(all)", {'l', "log"});
 	args::ValueFlag<std::string> optimizations(parser, "opt[,opt]...", "Specify optimization passes to run. ('help' to list available)", {'p', "optimizations"});
@@ -177,6 +180,15 @@ void parse_cmdline_options(int argc, const char* argv[])
 	}
 	if (convIm2col) {
 		options.conv_im2col = true;
+	}
+	if (abftGemm) {
+		options.abft_gemm = true;
+	}
+	if (abftMtile) {
+		options.abft_mtile = args::get(abftMtile);
+	}
+	if (abftEps) {
+		options.abft_eps = args::get(abftEps);
 	}
 	if (define) {
 		for (const auto& d : args::get(define)) {
