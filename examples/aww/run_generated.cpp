@@ -411,6 +411,19 @@ int main(int argc, char** argv)
 		std::size_t done_runs = 0;
 		std::mt19937 rng(sweep_seed);
 
+		// Baseline (fault-free) accuracy for this binary/config (useful for plotting).
+		{
+			const bool prev_fault_enabled = FAULT_ENABLED;
+			FAULT_ENABLED = false;
+			const auto st0 = run_dataset(samples, input_scale, input_zero_point);
+			FAULT_ENABLED = prev_fault_enabled;
+			const double acc0 = st0.samples ? (double)st0.correct / (double)st0.samples : 0.0;
+			const double acc0_corr =
+			    st0.samples ? (double)st0.correct_corrected / (double)st0.samples : 0.0;
+			std::cout << "baseline_accuracy=" << acc0 << " baseline_accuracy_corrected=" << acc0_corr
+			          << "\n";
+		}
+
 		std::cout << "sweep_layers=" << SWEEP_LAYER_COUNT << " sweep_patterns=" << patterns.size()
 		          << " sweep_indexes=" << sweep_indexes << " sweep_values=" << values.size() << "\n";
 

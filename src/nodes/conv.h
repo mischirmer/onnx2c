@@ -111,7 +111,18 @@ class Conv : public SpatialFilter {
 		INDT_4 << "for( uint32_t m0=" << m_begin << "; m0<" << m_end << "; m0+=MTILE ) {" << std::endl;
 		INDT_5 << "uint32_t m1 = MIN(m0 + MTILE, (uint32_t)(" << m_end << "));" << std::endl;
 
-		if (options.abft_gemm) {
+		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm;
+		if (options.abyzft_gemm) {
+			INDT_5 << "/* AByzFT: randomized scaling (per A-row, per B-column) */" << std::endl;
+			INDT_5 << "uint32_t abyzft_state = (uint32_t)(LAYER_ID ^ (uint32_t)b ^ (uint32_t)o0";
+			if (n_data_dims == 2) dst << " ^ (uint32_t)o1";
+			dst << " ^ (uint32_t)m0);" << std::endl;
+			INDT_5 << "float abyzft_scaleA = 0.5f + ABYZFT_rand01(&abyzft_state);" << std::endl;
+			INDT_5 << "float abyzft_scaleB[" << mtile << "];" << std::endl;
+			INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) abyzft_scaleB[mi] = 0.5f + ABYZFT_rand01(&abyzft_state);" << std::endl;
+		}
+
+		if (checksum_enabled) {
 			INDT_5 << "/* ABFT: build row-checksum of B (Kx1) over output-channel tile */" << std::endl;
 			INDT_5 << "float b_rs[" << K << "];" << std::endl;
 			INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) b_rs[kk2] = 0;" << std::endl;
@@ -159,8 +170,15 @@ class Conv : public SpatialFilter {
 		INDT_5 << "}" << std::endl;
 		INDT_5 << "}" << std::endl;
 
-		INDT_5 << "/* fault injection */" << std::endl;
-		INDT_5 << "if( FAULT_ENABLED && (FAULT_LAYER_ID==LAYER_ID || FAULT_LAYER_ID==0xFFFFFFFFu) ) {" << std::endl;
+		if (options.abyzft_gemm) {
+			INDT_5 << "float abyzft_scaleAB = abyzft_scaleA * abyzft_scaleB[m - m0];" << std::endl;
+			INDT_5 << "float acc_scaled = acc * abyzft_scaleAB;" << std::endl;
+			INDT_5 << "/* fault injection (on scaled result) */" << std::endl;
+			INDT_5 << "if( FAULT_ENABLED && (FAULT_LAYER_ID==LAYER_ID || FAULT_LAYER_ID==0xFFFFFFFFu) ) {" << std::endl;
+		} else {
+			INDT_5 << "/* fault injection */" << std::endl;
+			INDT_5 << "if( FAULT_ENABLED && (FAULT_LAYER_ID==LAYER_ID || FAULT_LAYER_ID==0xFFFFFFFFu) ) {" << std::endl;
+		}
 		if (n_data_dims == 1) {
 			INDT_5 << "const uint32_t P = " << out0 << "u;" << std::endl;
 			INDT_5 << "uint32_t out_idx = ((b * " << maps << "u + m) * P) + (uint32_t)o0;" << std::endl;
@@ -170,7 +188,10 @@ class Conv : public SpatialFilter {
 			INDT_5 << "uint32_t out_idx = ((b * " << maps << "u + m) * P) + ((uint32_t)o0 * " << out1 << "u + (uint32_t)o1);" << std::endl;
 		}
 		INDT_5 << "if( FAULT_MODEL==0 ) {" << std::endl;
-		INDT_5 << "if( out_idx == FAULT_INDEX ) { acc += FAULT_VALUE; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		if (options.abyzft_gemm)
+			INDT_5 << "if( out_idx == FAULT_INDEX ) { acc_scaled += FAULT_VALUE; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		else
+			INDT_5 << "if( out_idx == FAULT_INDEX ) { acc += FAULT_VALUE; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		INDT_5 << "}" << std::endl;
 		INDT_5 << "else if( FAULT_MODEL==1 ) {" << std::endl;
 		INDT_5 << "/* trivial 2x2 cancelling pattern (top-left at FAULT_INDEX):" << std::endl;
@@ -190,7 +211,10 @@ class Conv : public SpatialFilter {
 		INDT_5 << "else if( out_idx == FAULT_INDEX + P ) delta = -FAULT_VALUE;" << std::endl;
 		INDT_5 << "else if( out_idx == FAULT_INDEX + P + 1u ) delta = +FAULT_VALUE;" << std::endl;
 		INDT_5 << "}" << std::endl;
-		INDT_5 << "if( delta != 0.0f ) { acc += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		if (options.abyzft_gemm)
+			INDT_5 << "if( delta != 0.0f ) { acc_scaled += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		else
+			INDT_5 << "if( delta != 0.0f ) { acc += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		INDT_5 << "}" << std::endl;
 		INDT_5 << "else if( FAULT_MODEL==2 ) {" << std::endl;
 		INDT_5 << "/* checkered: repeat the trivial 2x2 cancelling pattern FAULT_N times at different positions. */" << std::endl;
@@ -208,22 +232,29 @@ class Conv : public SpatialFilter {
 		INDT_5 << "else if( out_idx == base + P ) delta += -FAULT_VALUE;" << std::endl;
 		INDT_5 << "else if( out_idx == base + P + 1u ) delta += +FAULT_VALUE;" << std::endl;
 		INDT_5 << "}" << std::endl;
-		INDT_5 << "if( delta != 0.0f ) { acc += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		if (options.abyzft_gemm)
+			INDT_5 << "if( delta != 0.0f ) { acc_scaled += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		else
+			INDT_5 << "if( delta != 0.0f ) { acc += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		INDT_5 << "}" << std::endl;
 		INDT_5 << "}" << std::endl;
+
+		if (options.abyzft_gemm) {
+			INDT_5 << "acc = acc_scaled / abyzft_scaleAB;" << std::endl;
+		}
 
 		if (n_data_dims == 1)
 			INDT_5 << "y[b][m][o0] = acc;" << std::endl;
 		else
 			INDT_5 << "y[b][m][o0][o1] = acc;" << std::endl;
 
-		if (options.abft_gemm) {
+		if (checksum_enabled) {
 			INDT_5 << "sumC += acc;" << std::endl;
 		}
 
 		INDT_5 << "} /* m */" << std::endl;
 
-		if (options.abft_gemm) {
+		if (checksum_enabled) {
 			INDT_5 << "/* ABFT verify: sum(C_tile) == (1^T A_tile) * (B_tile 1) */" << std::endl;
 			INDT_5 << "float pred = bias_sum;" << std::endl;
 			INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += col[kk2] * b_rs[kk2];" << std::endl;

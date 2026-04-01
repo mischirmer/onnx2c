@@ -126,6 +126,7 @@ void parse_cmdline_options(int argc, const char* argv[])
 	args::Flag onlyInit(parser, "only-init", "Only generate initialized tensors (for use with --extern-init)", {'i', "only-init"});
 	args::Flag convIm2col(parser, "conv-im2col", "Emit Conv as im2col + dot-product (matmul-style)", {"conv-im2col"});
 	args::Flag abftGemm(parser, "abft-gemm", "Add ABFT checks for gemm-like dot-products in Conv", {"abft-gemm"});
+	args::Flag abyzftGemm(parser, "abyzft-gemm", "AByzFT: randomized scaling + ABFT checks for gemm-like dot-products", {"abyzft-gemm"});
 	args::ValueFlag<uint32_t> abftMtile(parser, "N", "ABFT output-channel tile size (default: 8)", {"abft-mtile"});
 	args::ValueFlag<float> abftEps(parser, "eps", "ABFT relative tolerance (default: 1e-3)", {"abft-eps"});
 	args::ValueFlagList<std::string> define(parser, "dim:size", "Define graph input dimension. Can be given multiple times", {'d', "define"});
@@ -183,6 +184,9 @@ void parse_cmdline_options(int argc, const char* argv[])
 	}
 	if (abftGemm) {
 		options.abft_gemm = true;
+	}
+	if (abyzftGemm) {
+		options.abyzft_gemm = true;
 	}
 	if (abftMtile) {
 		options.abft_mtile = args::get(abftMtile);

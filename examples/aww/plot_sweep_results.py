@@ -34,6 +34,7 @@ class ParsedLog:
 
 
 _RE_BASELINE = re.compile(r"\bsamples=(\d+)\s+correct=(\d+)\s+accuracy=([0-9]*\.?[0-9]+)\b")
+_RE_BASELINE_SWEEP = re.compile(r"\bbaseline_accuracy=([0-9]*\.?[0-9]+)\b")
 _RE_SWEEP_HEADER = re.compile(r"\bsweep_layers=\d+\b")
 _RE_SWEEP = re.compile(
 	r"\blayer=(\d+)\s+op=([^\s]+)\s+pattern=([^\s]+)\s+value=([0-9eE\+\-\.]+)\s+"
@@ -51,6 +52,10 @@ def _parse_log(path: Path) -> ParsedLog:
 	lines = path.read_text(errors="replace").splitlines()
 	for line in lines:
 		if baseline_acc is None:
+			mh = _RE_BASELINE_SWEEP.search(line)
+			if mh:
+				baseline_acc = float(mh.group(1))
+				continue
 			m0 = _RE_BASELINE.search(line)
 			if m0:
 				baseline_acc = float(m0.group(3))

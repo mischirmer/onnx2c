@@ -302,7 +302,18 @@ class QLinearConv : public Node {
 		INDT_4 << "for( uint32_t m0=" << m_begin << "; m0<" << m_end << "; m0+=MTILE ) {" << std::endl;
 		INDT_5 << "uint32_t m1 = MIN(m0 + MTILE, (uint32_t)(" << m_end << "));" << std::endl;
 
-		if (options.abft_gemm) {
+		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm;
+		if (options.abyzft_gemm) {
+			INDT_5 << "/* AByzFT: randomized scaling (per A-row, per B-column) */" << std::endl;
+			INDT_5 << "uint32_t abyzft_state = (uint32_t)(LAYER_ID ^ (uint32_t)b ^ (uint32_t)o0";
+			if (n_data_dims == 2) dst << " ^ (uint32_t)o1";
+			dst << " ^ (uint32_t)m0);" << std::endl;
+			INDT_5 << "float abyzft_scaleA = 0.5f + ABYZFT_rand01(&abyzft_state);" << std::endl;
+			INDT_5 << "float abyzft_scaleB[" << mtile << "];" << std::endl;
+			INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) abyzft_scaleB[mi] = 0.5f + ABYZFT_rand01(&abyzft_state);" << std::endl;
+		}
+
+		if (checksum_enabled) {
 			INDT_5 << "/* ABFT (integer domain): build row-checksum of B over output-channel tile */" << std::endl;
 			INDT_5 << "int32_t b_rs[" << K << "];" << std::endl;
 			INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) b_rs[kk2] = 0;" << std::endl;
@@ -344,8 +355,16 @@ class QLinearConv : public Node {
 		INDT_5 << "}" << std::endl;
 		INDT_5 << "}" << std::endl;
 
-		INDT_5 << "/* fault injection */" << std::endl;
-		INDT_5 << "if( FAULT_ENABLED && (FAULT_LAYER_ID==LAYER_ID || FAULT_LAYER_ID==0xFFFFFFFFu) ) {" << std::endl;
+		if (options.abyzft_gemm) {
+			INDT_5 << "float abyzft_scaleAB = abyzft_scaleA * abyzft_scaleB[m - m0];" << std::endl;
+			INDT_5 << "double acc_scaled = (double)acc32 * (double)abyzft_scaleAB;" << std::endl;
+			INDT_5 << "bool abyzft_faulted = false;" << std::endl;
+			INDT_5 << "/* fault injection (on scaled accumulator) */" << std::endl;
+			INDT_5 << "if( FAULT_ENABLED && (FAULT_LAYER_ID==LAYER_ID || FAULT_LAYER_ID==0xFFFFFFFFu) ) {" << std::endl;
+		} else {
+			INDT_5 << "/* fault injection */" << std::endl;
+			INDT_5 << "if( FAULT_ENABLED && (FAULT_LAYER_ID==LAYER_ID || FAULT_LAYER_ID==0xFFFFFFFFu) ) {" << std::endl;
+		}
 		if (n_data_dims == 1) {
 			INDT_5 << "const uint32_t P = " << out0 << "u;" << std::endl;
 			INDT_5 << "uint32_t out_idx = ((b * " << maps << "u + m) * P) + (uint32_t)o0;" << std::endl;
@@ -360,7 +379,10 @@ class QLinearConv : public Node {
 		INDT_5 << "int32_t fault_delta = 0;" << std::endl;
 		INDT_5 << "if( eff_scale != 0.0 ) fault_delta = (int32_t) llround((double)FAULT_VALUE / eff_scale);" << std::endl;
 		INDT_5 << "if( FAULT_MODEL==0 ) {" << std::endl;
-		INDT_5 << "if( out_idx == FAULT_INDEX ) { acc32 += fault_delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		if (options.abyzft_gemm)
+			INDT_5 << "if( out_idx == FAULT_INDEX ) { acc_scaled += (double)fault_delta; abyzft_faulted = true; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		else
+			INDT_5 << "if( out_idx == FAULT_INDEX ) { acc32 += fault_delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		INDT_5 << "} else if( FAULT_MODEL==1 ) {" << std::endl;
 		INDT_5 << "bool trivial_ok = (" << group << "==1);" << std::endl;
 		INDT_5 << "uint32_t base_m = (FAULT_INDEX / P) % " << maps << "u;" << std::endl;
@@ -374,7 +396,10 @@ class QLinearConv : public Node {
 		INDT_5 << "else if( out_idx == FAULT_INDEX + P ) delta = -fault_delta;" << std::endl;
 		INDT_5 << "else if( out_idx == FAULT_INDEX + P + 1u ) delta = +fault_delta;" << std::endl;
 		INDT_5 << "}" << std::endl;
-		INDT_5 << "if( delta != 0 ) { acc32 += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		if (options.abyzft_gemm)
+			INDT_5 << "if( delta != 0 ) { acc_scaled += (double)delta; abyzft_faulted = true; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		else
+			INDT_5 << "if( delta != 0 ) { acc32 += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		INDT_5 << "} else if( FAULT_MODEL==2 ) {" << std::endl;
 		INDT_5 << "int32_t delta = 0;" << std::endl;
 		INDT_5 << "for( uint32_t r=0; r<FAULT_N; r++ ) {" << std::endl;
@@ -390,11 +415,20 @@ class QLinearConv : public Node {
 		INDT_5 << "else if( out_idx == base + P ) delta += -fault_delta;" << std::endl;
 		INDT_5 << "else if( out_idx == base + P + 1u ) delta += +fault_delta;" << std::endl;
 		INDT_5 << "}" << std::endl;
-		INDT_5 << "if( delta != 0 ) { acc32 += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		if (options.abyzft_gemm)
+			INDT_5 << "if( delta != 0 ) { acc_scaled += (double)delta; abyzft_faulted = true; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		else
+			INDT_5 << "if( delta != 0 ) { acc32 += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		INDT_5 << "}" << std::endl;
 		INDT_5 << "}" << std::endl;
 
-		if (options.abft_gemm) {
+		if (options.abyzft_gemm) {
+			// Avoid perturbing fault-free results: only map back to int32 when we actually
+			// injected a fault into this output element. Otherwise keep the exact acc32.
+			INDT_5 << "if( abyzft_faulted && abyzft_scaleAB != 0.0f ) acc32 = (int32_t) llround(acc_scaled / (double)abyzft_scaleAB);" << std::endl;
+		}
+
+		if (checksum_enabled) {
 			INDT_5 << "sumC += (int64_t)acc32;" << std::endl;
 		}
 
@@ -412,7 +446,7 @@ class QLinearConv : public Node {
 
 		INDT_5 << "} /* m */" << std::endl;
 
-		if (options.abft_gemm) {
+		if (checksum_enabled) {
 			INDT_5 << "/* ABFT verify (integer domain): sum(C_tile) == A * (B_tile 1) */" << std::endl;
 			INDT_5 << "int64_t pred = bias_sum;" << std::endl;
 			INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += (int64_t)col[kk2] * (int64_t)b_rs[kk2];" << std::endl;
