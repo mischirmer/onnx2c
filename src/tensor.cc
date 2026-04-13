@@ -505,10 +505,6 @@ std::string Tensor::print_tensor(
 			rv += "const ";
 		rv += data_type_str() + " ";
 	}
-	else if (union_no >= 0) {
-		rv += "tu" + std::to_string(union_no) + ".";
-	}
-
 	if (is_scalar()) {
 		// Scalars tensors are defined as scalars,
 		// but passed between functions as pointers.
@@ -523,6 +519,10 @@ std::string Tensor::print_tensor(
 		else if (!is_definition) {
 			rv += "*";
 		}
+	}
+
+	if (is_callsite && union_no >= 0) {
+		rv += "tu" + std::to_string(union_no) + ".";
 	}
 
 	if (alternate_name == "")
