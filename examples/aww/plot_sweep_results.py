@@ -23,6 +23,9 @@ class SweepRow:
 	acc_corr_min: Optional[float] = None
 	acc_corr_max: Optional[float] = None
 	acc_corr_mean: Optional[float] = None
+	det_min: Optional[float] = None
+	det_max: Optional[float] = None
+	det_mean: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,7 @@ _RE_SWEEP = re.compile(
 	r"\blayer=(\d+)\s+op=([^\s]+)\s+pattern=([^\s]+)\s+value=([0-9eE\+\-\.]+)\s+"
 	r"idx_trials=\d+\s+acc_min=([0-9]*\.?[0-9]+)\s+acc_max=([0-9]*\.?[0-9]+)\s+acc_mean=([0-9]*\.?[0-9]+)"
 	r"(?:\s+acc_corr_min=([0-9]*\.?[0-9]+)\s+acc_corr_max=([0-9]*\.?[0-9]+)\s+acc_corr_mean=([0-9]*\.?[0-9]+))?\b"
+	r"(?:\s+det_min=([0-9]*\.?[0-9]+)\s+det_max=([0-9]*\.?[0-9]+)\s+det_mean=([0-9]*\.?[0-9]+))?"
 )
 
 
@@ -82,6 +86,9 @@ def _parse_log(path: Path) -> ParsedLog:
 				acc_corr_min=float(m.group(8)) if m.group(8) is not None else None,
 				acc_corr_max=float(m.group(9)) if m.group(9) is not None else None,
 				acc_corr_mean=float(m.group(10)) if m.group(10) is not None else None,
+				det_min=float(m.group(11)) if m.group(11) is not None else None,
+				det_max=float(m.group(12)) if m.group(12) is not None else None,
+				det_mean=float(m.group(13)) if m.group(13) is not None else None,
 			)
 		)
 
@@ -243,6 +250,27 @@ def main() -> int:
 
 	fp32 = _parse_log(args.fp32_log)
 	int8 = _parse_log(args.int8_log)
+
+	# Sanity check: with fault value 0, detection should be zero.
+	# If detection columns are missing in the log, skip this check.
+	def _check_zero_value_detection(rows: List[SweepRow], log_name: str) -> None:
+		violations = [
+			r for r in rows
+			if r.value == 0.0 and (
+				(r.det_mean is not None and r.det_mean > 0.0) or
+				(r.det_max is not None and r.det_max > 0.0)
+			)
+		]
+		if violations:
+			example = violations[0]
+			raise SystemExit(
+				f"Sanity check failed for {log_name}: value=0 has nonzero detection "
+				f"(layer={example.layer}, op={example.op}, pattern={example.pattern}, "
+				f"det_mean={example.det_mean}, det_max={example.det_max})."
+			)
+
+	_check_zero_value_detection(fp32.rows, str(args.fp32_log))
+	_check_zero_value_detection(int8.rows, str(args.int8_log))
 
 	baseline_fp32 = args.baseline_fp32 if args.baseline_fp32 is not None else fp32.baseline_acc
 	baseline_int8 = args.baseline_int8 if args.baseline_int8 is not None else int8.baseline_acc

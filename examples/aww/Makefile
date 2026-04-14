@@ -8,63 +8,187 @@ CXXFLAGS ?= -O2 -std=c++17
 ONNX2C ?= ../../build/onnx2c
 ONNX2C_FLAGS ?= --conv-im2col
 TFLITE_INT8 ?= ../../../kws_ref_model.tflite
+BUILD_DIR ?= build
 
 FP32_ONNX ?= kws_ref_model_full_float32_from_savedmodel.onnx
 INT8_ONNX ?= kws_ref_model_full_float32_from_savedmodel.int8.qop.onnx
 
-FP32_C ?= resnet_fp32.c
-INT8_C ?= resnet_i8.c
-
-FP32_O ?= resnet_fp32.o
-INT8_O ?= resnet_i8.o
-
 RUNNER_CPP ?= run_generated.cpp
 
-.PHONY: all fp32 int8 gen_fp32 gen_int8 clean help
+.PHONY: all baseline abft abyzft freivalds1x fp32 int8 run_fp32 run_int8 clean help \
+	run_fp32_baseline run_int8_baseline run_fp32_abft run_int8_abft \
+	run_fp32_abyzft run_int8_abyzft run_fp32_freivalds1x run_int8_freivalds1x
 
-all: help
+BASELINE_ONNX2C_FLAGS ?= $(ONNX2C_FLAGS)
+ABFT_ONNX2C_FLAGS ?= --conv-im2col --abft-gemm
+ABYZFT_ONNX2C_FLAGS ?= --conv-im2col --abyzft-gemm
+FREIVALDS1X_ONNX2C_FLAGS ?= --conv-im2col --freivalds-gemm --freivalds-checks 1
+
+BASELINE_FP32_C ?= $(BUILD_DIR)/resnet_fp32_baseline.c
+BASELINE_INT8_C ?= $(BUILD_DIR)/resnet_i8_baseline.c
+ABFT_FP32_C ?= $(BUILD_DIR)/resnet_fp32_abft.c
+ABFT_INT8_C ?= $(BUILD_DIR)/resnet_i8_abft.c
+ABYZFT_FP32_C ?= $(BUILD_DIR)/resnet_fp32_abyzft.c
+ABYZFT_INT8_C ?= $(BUILD_DIR)/resnet_i8_abyzft.c
+FREIVALDS1X_FP32_C ?= $(BUILD_DIR)/resnet_fp32_freivalds1x.c
+FREIVALDS1X_INT8_C ?= $(BUILD_DIR)/resnet_i8_freivalds1x.c
+
+BASELINE_FP32_O ?= $(BUILD_DIR)/resnet_fp32_baseline.o
+BASELINE_INT8_O ?= $(BUILD_DIR)/resnet_i8_baseline.o
+ABFT_FP32_O ?= $(BUILD_DIR)/resnet_fp32_abft.o
+ABFT_INT8_O ?= $(BUILD_DIR)/resnet_i8_abft.o
+ABYZFT_FP32_O ?= $(BUILD_DIR)/resnet_fp32_abyzft.o
+ABYZFT_INT8_O ?= $(BUILD_DIR)/resnet_i8_abyzft.o
+FREIVALDS1X_FP32_O ?= $(BUILD_DIR)/resnet_fp32_freivalds1x.o
+FREIVALDS1X_INT8_O ?= $(BUILD_DIR)/resnet_i8_freivalds1x.o
+
+BASELINE_FP32_BIN ?= $(BUILD_DIR)/run_fp32_baseline
+BASELINE_INT8_BIN ?= $(BUILD_DIR)/run_int8_baseline
+ABFT_FP32_BIN ?= $(BUILD_DIR)/run_fp32_abft
+ABFT_INT8_BIN ?= $(BUILD_DIR)/run_int8_abft
+ABYZFT_FP32_BIN ?= $(BUILD_DIR)/run_fp32_abyzft
+ABYZFT_INT8_BIN ?= $(BUILD_DIR)/run_int8_abyzft
+FREIVALDS1X_FP32_BIN ?= $(BUILD_DIR)/run_fp32_freivalds1x
+FREIVALDS1X_INT8_BIN ?= $(BUILD_DIR)/run_int8_freivalds1x
+
+BASELINE_FLAGS_STAMP := $(BUILD_DIR)/.onnx2c_flags_baseline.stamp
+ABFT_FLAGS_STAMP := $(BUILD_DIR)/.onnx2c_flags_abft.stamp
+ABYZFT_FLAGS_STAMP := $(BUILD_DIR)/.onnx2c_flags_abyzft.stamp
+FREIVALDS1X_FLAGS_STAMP := $(BUILD_DIR)/.onnx2c_flags_freivalds1x.stamp
+
+ALL_BINS := \
+	$(BASELINE_FP32_BIN) $(BASELINE_INT8_BIN) \
+	$(ABFT_FP32_BIN) $(ABFT_INT8_BIN) \
+	$(ABYZFT_FP32_BIN) $(ABYZFT_INT8_BIN) \
+	$(FREIVALDS1X_FP32_BIN) $(FREIVALDS1X_INT8_BIN)
+
+all: $(ALL_BINS)
+
+baseline: $(BASELINE_FP32_BIN) $(BASELINE_INT8_BIN)
+abft: $(ABFT_FP32_BIN) $(ABFT_INT8_BIN)
+abyzft: $(ABYZFT_FP32_BIN) $(ABYZFT_INT8_BIN)
+freivalds1x: $(FREIVALDS1X_FP32_BIN) $(FREIVALDS1X_INT8_BIN)
 
 help:
 	@echo "Targets:"
-	@echo "  make fp32       # build run_fp32 (generates $(FP32_C) if missing)"
-	@echo "  make int8       # build run_int8 (generates $(INT8_C) if missing)"
-	@echo "  make gen_fp32   # regenerate $(FP32_C) from $(FP32_ONNX)"
-	@echo "  make gen_int8   # regenerate $(INT8_C) from $(INT8_ONNX)"
+	@echo "  make all        # build baseline, abft, abyzft, and freivalds1x binaries"
+	@echo "  make baseline   # build baseline fp32/int8 binaries"
+	@echo "  make abft       # build ABFT fp32/int8 binaries"
+	@echo "  make abyzft     # build AByzFT fp32/int8 binaries"
+	@echo "  make freivalds1x # build Freivalds(1x) fp32/int8 binaries"
+	@echo "  make fp32       # build baseline fp32 binary only"
+	@echo "  make int8       # build baseline int8 binary only"
 	@echo "  make clean"
 	@echo ""
 	@echo "Run:"
-	@echo "  ./run_fp32 --bin-dir DIR --label-csv FILE [--limit N]"
-	@echo "  ./run_int8 --bin-dir DIR --label-csv FILE [--limit N]"
+	@echo "  ./$(BASELINE_FP32_BIN) --bin-dir DIR --label-csv FILE [--limit N]"
+	@echo "  ./$(BASELINE_INT8_BIN) --bin-dir DIR --label-csv FILE [--limit N]"
 
-fp32: run_fp32
-int8: run_int8
+fp32: $(BASELINE_FP32_BIN)
+int8: $(BASELINE_INT8_BIN)
+gen_fp32: $(BASELINE_FP32_C)
+gen_int8: $(BASELINE_INT8_C)
 
-gen_fp32: $(FP32_C)
-gen_int8: $(INT8_C)
+$(BUILD_DIR):
+	mkdir -p $@
 
-FLAGS_STAMP := .onnx2c_flags.stamp
+$(BASELINE_FLAGS_STAMP): | $(BUILD_DIR)
+	@echo "$(BASELINE_ONNX2C_FLAGS)" > $@
 
-$(FLAGS_STAMP):
-	@echo "$(ONNX2C_FLAGS)" > $(FLAGS_STAMP)
+$(ABFT_FLAGS_STAMP): | $(BUILD_DIR)
+	@echo "$(ABFT_ONNX2C_FLAGS)" > $@
 
-run_fp32: $(FP32_O) $(RUNNER_CPP)
-	$(CXX) $(CXXFLAGS) $(RUNNER_CPP) $(FP32_O) -o $@ $(RUN_DEFS)
+$(ABYZFT_FLAGS_STAMP): | $(BUILD_DIR)
+	@echo "$(ABYZFT_ONNX2C_FLAGS)" > $@
 
-run_int8: $(INT8_O) $(RUNNER_CPP)
-	$(CXX) $(CXXFLAGS) $(RUNNER_CPP) $(INT8_O) -o $@ $(RUN_DEFS)
+$(FREIVALDS1X_FLAGS_STAMP): | $(BUILD_DIR)
+	@echo "$(FREIVALDS1X_ONNX2C_FLAGS)" > $@
 
-$(FP32_O): $(FP32_C)
+$(BASELINE_FP32_C): $(FP32_ONNX) $(ONNX2C) $(BASELINE_FLAGS_STAMP)
+	$(ONNX2C) $(BASELINE_ONNX2C_FLAGS) $(FP32_ONNX) > $@
+
+$(BASELINE_INT8_C): $(INT8_ONNX) $(ONNX2C) $(BASELINE_FLAGS_STAMP)
+	$(ONNX2C) $(BASELINE_ONNX2C_FLAGS) $(INT8_ONNX) > $@
+
+$(ABFT_FP32_C): $(FP32_ONNX) $(ONNX2C) $(ABFT_FLAGS_STAMP)
+	$(ONNX2C) $(ABFT_ONNX2C_FLAGS) $(FP32_ONNX) > $@
+
+$(ABFT_INT8_C): $(INT8_ONNX) $(ONNX2C) $(ABFT_FLAGS_STAMP)
+	$(ONNX2C) $(ABFT_ONNX2C_FLAGS) $(INT8_ONNX) > $@
+
+$(ABYZFT_FP32_C): $(FP32_ONNX) $(ONNX2C) $(ABYZFT_FLAGS_STAMP)
+	$(ONNX2C) $(ABYZFT_ONNX2C_FLAGS) $(FP32_ONNX) > $@
+
+$(ABYZFT_INT8_C): $(INT8_ONNX) $(ONNX2C) $(ABYZFT_FLAGS_STAMP)
+	$(ONNX2C) $(ABYZFT_ONNX2C_FLAGS) $(INT8_ONNX) > $@
+
+$(FREIVALDS1X_FP32_C): $(FP32_ONNX) $(ONNX2C) $(FREIVALDS1X_FLAGS_STAMP)
+	$(ONNX2C) $(FREIVALDS1X_ONNX2C_FLAGS) $(FP32_ONNX) > $@
+
+$(FREIVALDS1X_INT8_C): $(INT8_ONNX) $(ONNX2C) $(FREIVALDS1X_FLAGS_STAMP)
+	$(ONNX2C) $(FREIVALDS1X_ONNX2C_FLAGS) $(INT8_ONNX) > $@
+
+$(BASELINE_FP32_O): $(BASELINE_FP32_C)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(INT8_O): $(INT8_C)
+$(BASELINE_INT8_O): $(BASELINE_INT8_C)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Auto-generate C from ONNX if the file is missing.
-$(FP32_C): $(FP32_ONNX) $(ONNX2C) $(FLAGS_STAMP)
-	$(ONNX2C) $(ONNX2C_FLAGS) $(FP32_ONNX) > $(FP32_C)
+$(ABFT_FP32_O): $(ABFT_FP32_C)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-$(INT8_C): $(INT8_ONNX) $(ONNX2C) $(FLAGS_STAMP)
-	$(ONNX2C) $(ONNX2C_FLAGS) $(INT8_ONNX) > $(INT8_C)
+$(ABFT_INT8_O): $(ABFT_INT8_C)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(ABYZFT_FP32_O): $(ABYZFT_FP32_C)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(ABYZFT_INT8_O): $(ABYZFT_INT8_C)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(FREIVALDS1X_FP32_O): $(FREIVALDS1X_FP32_C)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(FREIVALDS1X_INT8_O): $(FREIVALDS1X_INT8_C)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BASELINE_FP32_BIN): $(BASELINE_FP32_O) $(RUNNER_CPP) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(RUNNER_CPP) $(BASELINE_FP32_O) -o $@ $(RUN_DEFS)
+
+$(BASELINE_INT8_BIN): $(BASELINE_INT8_O) $(RUNNER_CPP) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(RUNNER_CPP) $(BASELINE_INT8_O) -o $@ $(RUN_DEFS)
+
+$(ABFT_FP32_BIN): $(ABFT_FP32_O) $(RUNNER_CPP) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(RUNNER_CPP) $(ABFT_FP32_O) -o $@ $(RUN_DEFS)
+
+$(ABFT_INT8_BIN): $(ABFT_INT8_O) $(RUNNER_CPP) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(RUNNER_CPP) $(ABFT_INT8_O) -o $@ $(RUN_DEFS)
+
+$(ABYZFT_FP32_BIN): $(ABYZFT_FP32_O) $(RUNNER_CPP) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(RUNNER_CPP) $(ABYZFT_FP32_O) -o $@ $(RUN_DEFS)
+
+$(ABYZFT_INT8_BIN): $(ABYZFT_INT8_O) $(RUNNER_CPP) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(RUNNER_CPP) $(ABYZFT_INT8_O) -o $@ $(RUN_DEFS)
+
+$(FREIVALDS1X_FP32_BIN): $(FREIVALDS1X_FP32_O) $(RUNNER_CPP) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(RUNNER_CPP) $(FREIVALDS1X_FP32_O) -o $@ $(RUN_DEFS)
+
+$(FREIVALDS1X_INT8_BIN): $(FREIVALDS1X_INT8_O) $(RUNNER_CPP) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) $(RUNNER_CPP) $(FREIVALDS1X_INT8_O) -o $@ $(RUN_DEFS)
+
+# Legacy aliases kept for compatibility with older scripts.
+run_fp32: $(BASELINE_FP32_BIN)
+run_int8: $(BASELINE_INT8_BIN)
+
+# Compatibility aliases (old target names still valid).
+run_fp32_baseline: $(BASELINE_FP32_BIN)
+run_int8_baseline: $(BASELINE_INT8_BIN)
+run_fp32_abft: $(ABFT_FP32_BIN)
+run_int8_abft: $(ABFT_INT8_BIN)
+run_fp32_abyzft: $(ABYZFT_FP32_BIN)
+run_int8_abyzft: $(ABYZFT_INT8_BIN)
+run_fp32_freivalds1x: $(FREIVALDS1X_FP32_BIN)
+run_int8_freivalds1x: $(FREIVALDS1X_INT8_BIN)
 
 # Use the int8 TFLite model's input quantization parameters to dequantize the MLPerf bins
 # into float input expected by the generated ONNX models.
@@ -76,4 +200,12 @@ RUN_DEFS := $(shell $(PY) -c "import os,sys; p='$(TFLITE_INT8)'; \
   print(f'-DINPUT_SCALE={q[0]} -DINPUT_ZERO_POINT={q[1]}')")
 
 clean:
-	rm -f run_fp32 run_int8 $(FP32_O) $(INT8_O) $(FLAGS_STAMP)
+	rm -f $(ALL_BINS) \
+	  $(BASELINE_FP32_O) $(BASELINE_INT8_O) $(ABFT_FP32_O) $(ABFT_INT8_O) \
+	  $(ABYZFT_FP32_O) $(ABYZFT_INT8_O) $(FREIVALDS1X_FP32_O) $(FREIVALDS1X_INT8_O) \
+	  $(BASELINE_FP32_C) $(BASELINE_INT8_C) $(ABFT_FP32_C) $(ABFT_INT8_C) \
+	  $(ABYZFT_FP32_C) $(ABYZFT_INT8_C) $(FREIVALDS1X_FP32_C) $(FREIVALDS1X_INT8_C) \
+	  $(BASELINE_FLAGS_STAMP) $(ABFT_FLAGS_STAMP) $(ABYZFT_FLAGS_STAMP) $(FREIVALDS1X_FLAGS_STAMP) \
+	  run_fp32_* run_int8_* \
+	  resnet_fp32_*.c resnet_i8_*.c resnet_fp32_*.o resnet_i8_*.o \
+	  .onnx2c_flags_baseline.stamp .onnx2c_flags_abft.stamp .onnx2c_flags_abyzft.stamp .onnx2c_flags_freivalds1x.stamp

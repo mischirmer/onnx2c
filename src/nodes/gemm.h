@@ -76,11 +76,14 @@ class Gemm : public Node {
 		dst << "\t" << "const int M = " << M << ";" << std::endl;
 		dst << "\t" << "const int K = " << K << ";" << std::endl;
 		dst << "\t" << "const int N = " << N << ";" << std::endl;
+		dst << "\t" << "const uint32_t LAYER_ID = " << node_id << ";" << std::endl;
 		dst << "\t" << "float alpha = " << alpha << ";" << std::endl;
 		dst << "\t" << "float beta = " << beta << ";" << std::endl;
 
 		std::string A_el = transA ? "A[i][r]" : "A[r][i]";
 		std::string B_idx = transB ? "[c][i]" : "[i][c]";
+		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || options.freivalds_gemm;
+		const bool freivalds_enabled = options.freivalds_gemm;
 
 		// Cast optional C matrix to generated variable
 		// "C_[M][N]"
@@ -132,6 +135,10 @@ class Gemm : public Node {
 
 		// Loop output rows, columns
 		INDT_1 << "for( uint32_t r=0; r<M; r++ )" << std::endl;
+		INDT_2 << "{" << std::endl;
+		if (checksum_enabled) {
+			INDT_2 << "float acc_row[N];" << std::endl;
+		}
 		INDT_2 << "for( uint32_t c=0; c<N; c++ ) {" << std::endl;
 
 		/* Calculate the matrix muliplication dot inner dot product */
@@ -148,8 +155,114 @@ class Gemm : public Node {
 			INDT_3 << "tmp += C_" << C_idx << " * beta;" << std::endl;
 		}
 
-		INDT_3 << "Y[r][c] = tmp;" << std::endl;
+		INDT_3 << "/* fault injection */" << std::endl;
+		INDT_3 << "if( FAULT_ENABLED && (FAULT_LAYER_ID==LAYER_ID || FAULT_LAYER_ID==0xFFFFFFFFu) ) {" << std::endl;
+		INDT_4 << "const uint32_t P = (uint32_t)N;" << std::endl;
+		INDT_4 << "uint32_t out_idx = ((uint32_t)r * P) + (uint32_t)c;" << std::endl;
+		INDT_4 << "if( FAULT_MODEL==0 ) {" << std::endl;
+		INDT_4 << "if( out_idx == FAULT_INDEX ) { tmp += FAULT_VALUE; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		INDT_4 << "} else if( FAULT_MODEL==1 ) {" << std::endl;
+		INDT_4 << "uint32_t base_r = (FAULT_INDEX / P);" << std::endl;
+		INDT_4 << "uint32_t base_c = (FAULT_INDEX % P);" << std::endl;
+		INDT_4 << "bool ok = (base_r + 1u < (uint32_t)M) && (base_c + 1u < P);" << std::endl;
+		INDT_4 << "float delta = 0.0f;" << std::endl;
+		INDT_4 << "if( ok ) {" << std::endl;
+		INDT_4 << "if( out_idx == FAULT_INDEX ) delta = +FAULT_VALUE;" << std::endl;
+		INDT_4 << "else if( out_idx == FAULT_INDEX + 1u ) delta = -FAULT_VALUE;" << std::endl;
+		INDT_4 << "else if( out_idx == FAULT_INDEX + P ) delta = -FAULT_VALUE;" << std::endl;
+		INDT_4 << "else if( out_idx == FAULT_INDEX + P + 1u ) delta = +FAULT_VALUE;" << std::endl;
+		INDT_4 << "}" << std::endl;
+		INDT_4 << "if( delta != 0.0f ) { tmp += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		INDT_4 << "} else if( FAULT_MODEL==2 ) {" << std::endl;
+		INDT_4 << "float delta = 0.0f;" << std::endl;
+		INDT_4 << "for( uint32_t rr=0; rr<FAULT_N; rr++ ) {" << std::endl;
+		INDT_4 << "uint32_t base = FAULT_INDEX + rr * FAULT_STRIDE;" << std::endl;
+		INDT_4 << "uint32_t base_r = (base / P);" << std::endl;
+		INDT_4 << "uint32_t base_c = (base % P);" << std::endl;
+		INDT_4 << "bool ok = (base_r + 1u < (uint32_t)M) && (base_c + 1u < P);" << std::endl;
+		INDT_4 << "if( !ok ) continue;" << std::endl;
+		INDT_4 << "if( out_idx == base ) delta += +FAULT_VALUE;" << std::endl;
+		INDT_4 << "else if( out_idx == base + 1u ) delta += -FAULT_VALUE;" << std::endl;
+		INDT_4 << "else if( out_idx == base + P ) delta += -FAULT_VALUE;" << std::endl;
+		INDT_4 << "else if( out_idx == base + P + 1u ) delta += +FAULT_VALUE;" << std::endl;
+		INDT_4 << "}" << std::endl;
+		INDT_4 << "if( delta != 0.0f ) { tmp += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+		INDT_4 << "}" << std::endl;
+		INDT_3 << "}" << std::endl;
 
+		INDT_3 << "Y[r][c] = tmp;" << std::endl;
+		if (checksum_enabled) {
+			INDT_3 << "acc_row[c] = tmp;" << std::endl;
+		}
+
+		INDT_2 << "}" << std::endl;
+		if (checksum_enabled) {
+			if (freivalds_enabled) {
+				INDT_2 << "/* Freivalds verify: (A * (B*r)) + (C*r) == (Y * r) */" << std::endl;
+				INDT_2 << "for( uint32_t chk=0; chk<" << (options.freivalds_checks ? options.freivalds_checks : 1) << "u; chk++ ) {" << std::endl;
+				INDT_3 << "uint32_t freivalds_state = (uint32_t)(0x9E3779B9u ^ LAYER_ID ^ r ^ (uint32_t)(chk*0x85EBCA6Bu));" << std::endl;
+				INDT_3 << "uint32_t r_vec[N];" << std::endl;
+				INDT_3 << "uint32_t r_any = 0;" << std::endl;
+				INDT_3 << "for( uint32_t cc=0; cc<N; cc++ ) { r_vec[cc] = ABYZFT_randbit(&freivalds_state); r_any |= r_vec[cc]; }" << std::endl;
+				INDT_3 << "if( !r_any && N>0u ) r_vec[0] = 1u;" << std::endl;
+				INDT_3 << "float b_rs[K];" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<K; i++ ) b_rs[i] = 0.0f;" << std::endl;
+				INDT_3 << "float bias_sum = 0.0f;" << std::endl;
+				INDT_3 << "float sumC = 0.0f;" << std::endl;
+				INDT_3 << "for( uint32_t cc=0; cc<N; cc++ ) if( r_vec[cc] ) {" << std::endl;
+				if (C) {
+					INDT_4 << "bias_sum += C_"
+					       << ((C0 <= 1) ? "[0]" : "[r]")
+					       << ((C1 <= 1) ? "[0]" : "[cc]")
+					       << " * beta;" << std::endl;
+				}
+				INDT_4 << "sumC += acc_row[cc];" << std::endl;
+				INDT_4 << "for( uint32_t i=0; i<K; i++ ) {" << std::endl;
+				if (transB) {
+					INDT_5 << "b_rs[i] += " << constant_acces_code("B[cc][i]") << ";" << std::endl;
+				}
+				else {
+					INDT_5 << "b_rs[i] += " << constant_acces_code("B[i][cc]") << ";" << std::endl;
+				}
+				INDT_4 << "}" << std::endl;
+				INDT_3 << "}" << std::endl;
+				INDT_3 << "float pred = bias_sum;" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<K; i++ ) pred += alpha * (" << A_el << ") * b_rs[i];" << std::endl;
+				INDT_3 << "float diff = fabsf(sumC - pred);" << std::endl;
+				INDT_3 << "float tol = " << options.abft_eps << "f * (fabsf(pred) + 1.0f);" << std::endl;
+				INDT_3 << "if( diff > tol ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; break; }" << std::endl;
+				INDT_2 << "}" << std::endl;
+			}
+			else {
+				INDT_2 << "/* ABFT verify: sum(Y_row) == alpha*(A_row*(B*1)) + beta*sum(C_row) */" << std::endl;
+				INDT_2 << "float b_s[K];" << std::endl;
+				INDT_2 << "for( uint32_t i=0; i<K; i++ ) b_s[i] = 0.0f;" << std::endl;
+				INDT_2 << "float bias_sum = 0.0f;" << std::endl;
+				INDT_2 << "float sumC = 0.0f;" << std::endl;
+				INDT_2 << "for( uint32_t cc=0; cc<N; cc++ ) {" << std::endl;
+				if (C) {
+					INDT_3 << "bias_sum += C_"
+					       << ((C0 <= 1) ? "[0]" : "[r]")
+					       << ((C1 <= 1) ? "[0]" : "[cc]")
+					       << " * beta;" << std::endl;
+				}
+				INDT_3 << "sumC += acc_row[cc];" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<K; i++ ) {" << std::endl;
+				if (transB) {
+					INDT_4 << "b_s[i] += " << constant_acces_code("B[cc][i]") << ";" << std::endl;
+				}
+				else {
+					INDT_4 << "b_s[i] += " << constant_acces_code("B[i][cc]") << ";" << std::endl;
+				}
+				INDT_3 << "}" << std::endl;
+				INDT_2 << "}" << std::endl;
+				INDT_2 << "float pred = bias_sum;" << std::endl;
+				INDT_2 << "for( uint32_t i=0; i<K; i++ ) pred += alpha * (" << A_el << ") * b_s[i];" << std::endl;
+				INDT_2 << "float diff = fabsf(sumC - pred);" << std::endl;
+				INDT_2 << "float tol = " << (options.abyzft_gemm ? (options.abft_eps * 0.1f) : options.abft_eps) << "f * (fabsf(pred) + 1.0f);" << std::endl;
+				INDT_2 << "if( diff > tol ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; }" << std::endl;
+			}
+		}
 		INDT_1 << "}" << std::endl;
 	}
 

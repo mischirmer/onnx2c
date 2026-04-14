@@ -113,6 +113,7 @@ class QGemm : public Node {
 
 		INDT_1 << "/* QGemm */" << std::endl;
 		INDT_1 << "const uint32_t LAYER_ID = " << node_id << ";" << std::endl;
+		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || options.freivalds_gemm;
 		const bool freivalds_enabled = options.freivalds_gemm;
 
 		// Cast C to a 2D view for simple broadcast addressing (like Gemm).
@@ -158,7 +159,7 @@ class QGemm : public Node {
 
 		INDT_1 << "for( uint32_t r=0; r<" << M << "; r++ ) {" << std::endl;
 
-		if (freivalds_enabled) {
+		if (checksum_enabled) {
 			INDT_2 << "/* Freivalds: store row accumulators for multiple checks */" << std::endl;
 			INDT_2 << "int32_t acc_row[" << N << "];" << std::endl;
 		}
@@ -224,42 +225,69 @@ class QGemm : public Node {
 		INDT_3 << "t = MIN(MAX(t, " << lower << "), " << upper << ");" << std::endl;
 		INDT_3 << "Y[r][c] = (" << Y->data_type_str() << ") t;" << std::endl;
 
-		if (freivalds_enabled) {
+		if (checksum_enabled) {
 			INDT_3 << "acc_row[c] = acc32;" << std::endl;
 		}
 
 		INDT_2 << "}" << std::endl;
-		if (freivalds_enabled) {
-			INDT_2 << "/* Freivalds verify: (A * (B*r)) + (C*r) == (Y_acc32 * r) */" << std::endl;
-			INDT_2 << "for( uint32_t chk=0; chk<" << (options.freivalds_checks ? options.freivalds_checks : 1) << "u; chk++ ) {" << std::endl;
-			INDT_3 << "uint32_t freivalds_state = (uint32_t)(0x9E3779B9u ^ LAYER_ID ^ r ^ (uint32_t)(chk*0x85EBCA6Bu));" << std::endl;
-			INDT_3 << "uint32_t r_vec[" << N << "];" << std::endl;
-			INDT_3 << "uint32_t r_any = 0;" << std::endl;
-			INDT_3 << "for( uint32_t cc=0; cc<" << N << "; cc++ ) { r_vec[cc] = ABYZFT_randbit(&freivalds_state); r_any |= r_vec[cc]; }" << std::endl;
-			INDT_3 << "if( !r_any && " << N << "u>0u ) r_vec[0] = 1u;" << std::endl;
-			INDT_3 << "int32_t b_rs[" << K << "];" << std::endl;
-			INDT_3 << "for( uint32_t i=0; i<" << K << "; i++ ) b_rs[i] = 0;" << std::endl;
-			INDT_3 << "int64_t bias_sum = 0;" << std::endl;
-			INDT_3 << "int64_t sumC = 0;" << std::endl;
-			INDT_3 << "for( uint32_t cc=0; cc<" << N << "; cc++ ) if( r_vec[cc] ) {" << std::endl;
-			INDT_4 << "bias_sum += (int64_t)C_"
-			       << ((C0 <= 1) ? "[0]" : "[r]")
-			       << ((C1 <= 1) ? "[0]" : "[cc]")
-			       << ";" << std::endl;
-			INDT_4 << "sumC += (int64_t)acc_row[cc];" << std::endl;
-			INDT_4 << "for( uint32_t i=0; i<" << K << "; i++ ) {" << std::endl;
-			if (transB) {
-				INDT_5 << "b_rs[i] += ((int32_t)B[cc][i] - (int32_t)b_zero_point[0]);" << std::endl;
+		if (checksum_enabled) {
+			if (freivalds_enabled) {
+				INDT_2 << "/* Freivalds verify: (A * (B*r)) + (C*r) == (Y_acc32 * r) */" << std::endl;
+				INDT_2 << "for( uint32_t chk=0; chk<" << (options.freivalds_checks ? options.freivalds_checks : 1) << "u; chk++ ) {" << std::endl;
+				INDT_3 << "uint32_t freivalds_state = (uint32_t)(0x9E3779B9u ^ LAYER_ID ^ r ^ (uint32_t)(chk*0x85EBCA6Bu));" << std::endl;
+				INDT_3 << "uint32_t r_vec[" << N << "];" << std::endl;
+				INDT_3 << "uint32_t r_any = 0;" << std::endl;
+				INDT_3 << "for( uint32_t cc=0; cc<" << N << "; cc++ ) { r_vec[cc] = ABYZFT_randbit(&freivalds_state); r_any |= r_vec[cc]; }" << std::endl;
+				INDT_3 << "if( !r_any && " << N << "u>0u ) r_vec[0] = 1u;" << std::endl;
+				INDT_3 << "int32_t b_rs[" << K << "];" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<" << K << "; i++ ) b_rs[i] = 0;" << std::endl;
+				INDT_3 << "int64_t bias_sum = 0;" << std::endl;
+				INDT_3 << "int64_t sumC = 0;" << std::endl;
+				INDT_3 << "for( uint32_t cc=0; cc<" << N << "; cc++ ) if( r_vec[cc] ) {" << std::endl;
+				INDT_4 << "bias_sum += (int64_t)C_"
+				       << ((C0 <= 1) ? "[0]" : "[r]")
+				       << ((C1 <= 1) ? "[0]" : "[cc]")
+				       << ";" << std::endl;
+				INDT_4 << "sumC += (int64_t)acc_row[cc];" << std::endl;
+				INDT_4 << "for( uint32_t i=0; i<" << K << "; i++ ) {" << std::endl;
+				if (transB) {
+					INDT_5 << "b_rs[i] += ((int32_t)B[cc][i] - (int32_t)b_zero_point[0]);" << std::endl;
+				}
+				else {
+					INDT_5 << "b_rs[i] += ((int32_t)B[i][cc] - (int32_t)b_zero_point[0]);" << std::endl;
+				}
+				INDT_4 << "}" << std::endl;
+				INDT_3 << "}" << std::endl;
+				INDT_3 << "int64_t pred = bias_sum;" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<" << K << "; i++ ) pred += (int64_t)((int32_t)A[r][i] - (int32_t)a_zero_point[0]) * (int64_t)b_rs[i];" << std::endl;
+				INDT_3 << "if( sumC != pred ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; break; }" << std::endl;
+				INDT_2 << "}" << std::endl;
 			}
 			else {
-				INDT_5 << "b_rs[i] += ((int32_t)B[i][cc] - (int32_t)b_zero_point[0]);" << std::endl;
+				INDT_2 << "/* ABFT verify (integer domain): sum(C_row) == A * (B 1) + sum(bias) */" << std::endl;
+				INDT_2 << "int32_t b_s[" << K << "];" << std::endl;
+				INDT_2 << "for( uint32_t i=0; i<" << K << "; i++ ) b_s[i] = 0;" << std::endl;
+				INDT_2 << "int64_t bias_sum = 0;" << std::endl;
+				INDT_2 << "int64_t sumC = 0;" << std::endl;
+				INDT_2 << "for( uint32_t cc=0; cc<" << N << "; cc++ ) {" << std::endl;
+				INDT_3 << "bias_sum += (int64_t)C_"
+				       << ((C0 <= 1) ? "[0]" : "[r]")
+				       << ((C1 <= 1) ? "[0]" : "[cc]")
+				       << ";" << std::endl;
+				INDT_3 << "sumC += (int64_t)acc_row[cc];" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<" << K << "; i++ ) {" << std::endl;
+				if (transB) {
+					INDT_4 << "b_s[i] += ((int32_t)B[cc][i] - (int32_t)b_zero_point[0]);" << std::endl;
+				}
+				else {
+					INDT_4 << "b_s[i] += ((int32_t)B[i][cc] - (int32_t)b_zero_point[0]);" << std::endl;
+				}
+				INDT_3 << "}" << std::endl;
+				INDT_2 << "}" << std::endl;
+				INDT_2 << "int64_t pred = bias_sum;" << std::endl;
+				INDT_2 << "for( uint32_t i=0; i<" << K << "; i++ ) pred += (int64_t)((int32_t)A[r][i] - (int32_t)a_zero_point[0]) * (int64_t)b_s[i];" << std::endl;
+				INDT_2 << "if( sumC != pred ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; }" << std::endl;
 			}
-			INDT_4 << "}" << std::endl;
-			INDT_3 << "}" << std::endl;
-			INDT_3 << "int64_t pred = bias_sum;" << std::endl;
-			INDT_3 << "for( uint32_t i=0; i<" << K << "; i++ ) pred += (int64_t)((int32_t)A[r][i] - (int32_t)a_zero_point[0]) * (int64_t)b_rs[i];" << std::endl;
-			INDT_3 << "if( sumC != pred ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; break; }" << std::endl;
-			INDT_2 << "}" << std::endl;
 		}
 
 		INDT_1 << "}" << std::endl;

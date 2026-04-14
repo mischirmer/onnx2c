@@ -300,7 +300,7 @@ int main(int argc, char** argv)
 	bool sweep = false;
 	std::size_t sweep_indexes = 10;
 	std::string sweep_patterns_csv = "single_point,trivial,checkered";
-	std::string sweep_values_csv = "5, 10, 1e3";
+	std::string sweep_values_csv = "0, 5, 10, 1e3";
 	bool sweep_progress = true;
 	uint32_t sweep_seed = 12345;
 	bool sweep_debug = false;

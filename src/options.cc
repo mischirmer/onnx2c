@@ -129,8 +129,18 @@ void parse_cmdline_options(int argc, const char* argv[])
 	args::Flag abyzftGemm(parser, "abyzft-gemm", "AByzFT: randomized scaling + ABFT checks for gemm-like dot-products", {"abyzft-gemm"});
 	args::Flag freivaldsGemm(parser, "freivalds-gemm", "Freivalds check (random {0,1} vector) for gemm-like dot-products", {"freivalds-gemm"});
 	args::ValueFlag<uint32_t> freivaldsChecks(parser, "N", "Number of independent Freivalds checks (default: 1)", {"freivalds-checks"});
-	args::ValueFlag<uint32_t> abftMtile(parser, "N", "ABFT output-channel tile size (default: 8)", {"abft-mtile"});
+	args::ValueFlag<uint32_t> abftMtile(parser, "N", "ABFT/Freivalds/AByzFT output-channel tile size (default: 16)", {"abft-mtile"});
 	args::ValueFlag<float> abftEps(parser, "eps", "ABFT relative tolerance (default: 1e-3)", {"abft-eps"});
+	args::Flag abftWeightChecksumsCompiletime(
+	    parser,
+	    "abft-weight-checksums-compiletime",
+	    "Precompute ABFT weight checksum vectors at codegen time",
+	    {"abft-weight-checksums-compiletime"});
+	args::Flag abftWeightChecksumsRuntime(
+	    parser,
+	    "abft-weight-checksums-runtime",
+	    "Compute ABFT weight checksum vectors at runtime (default)",
+	    {"abft-weight-checksums-runtime"});
 	args::ValueFlagList<std::string> define(parser, "dim:size", "Define graph input dimension. Can be given multiple times", {'d', "define"});
 	args::ValueFlag<int> loglevel(parser, "level", "Logging verbosity. 0(none)-4(all)", {'l', "log"});
 	args::ValueFlag<std::string> optimizations(parser, "opt[,opt]...", "Specify optimization passes to run. ('help' to list available)", {'p', "optimizations"});
@@ -202,6 +212,12 @@ void parse_cmdline_options(int argc, const char* argv[])
 	}
 	if (abftEps) {
 		options.abft_eps = args::get(abftEps);
+	}
+	if (abftWeightChecksumsCompiletime) {
+		options.abft_weight_checksums_compiletime = true;
+	}
+	if (abftWeightChecksumsRuntime) {
+		options.abft_weight_checksums_compiletime = false;
 	}
 	if (define) {
 		for (const auto& d : args::get(define)) {
