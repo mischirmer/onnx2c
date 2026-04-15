@@ -16,6 +16,10 @@ INT8_ONNX ?= kws_ref_model_full_float32_from_savedmodel.int8.qop.onnx
 RUNNER_CPP ?= run_generated.cpp
 
 .PHONY: all baseline abft abyzft freivalds1x freivalds2x freivalds%x gvfa1x gvfa2x gvfa%x fp32 int8 run_fp32 run_int8 clean help \
+	aww_fp32_baseline aww_int8_baseline aww_fp32_abft aww_int8_abft \
+	aww_fp32_abyzft aww_int8_abyzft aww_fp32_freivalds1x aww_int8_freivalds1x \
+	aww_fp32_freivalds2x aww_int8_freivalds2x aww_fp32_gvfa1x aww_int8_gvfa1x \
+	aww_fp32_gvfa2x aww_int8_gvfa2x \
 	run_fp32_baseline run_int8_baseline run_fp32_abft run_int8_abft \
 	run_fp32_abyzft run_int8_abyzft run_fp32_freivalds1x run_int8_freivalds1x \
 	run_fp32_freivalds2x run_int8_freivalds2x run_fp32_gvfa1x run_int8_gvfa1x \
@@ -29,50 +33,50 @@ FREIVALDS2X_ONNX2C_FLAGS ?= --conv-im2col --freivalds-gemm --freivalds-checks 2
 GVFA1X_ONNX2C_FLAGS ?= --conv-im2col --gvfa-gemm --gvfa-checks 1
 GVFA2X_ONNX2C_FLAGS ?= --conv-im2col --gvfa-gemm --gvfa-checks 2
 
-BASELINE_FP32_C ?= $(BUILD_DIR)/resnet_fp32_baseline.c
-BASELINE_INT8_C ?= $(BUILD_DIR)/resnet_i8_baseline.c
-ABFT_FP32_C ?= $(BUILD_DIR)/resnet_fp32_abft.c
-ABFT_INT8_C ?= $(BUILD_DIR)/resnet_i8_abft.c
-ABYZFT_FP32_C ?= $(BUILD_DIR)/resnet_fp32_abyzft.c
-ABYZFT_INT8_C ?= $(BUILD_DIR)/resnet_i8_abyzft.c
-FREIVALDS1X_FP32_C ?= $(BUILD_DIR)/resnet_fp32_freivalds1x.c
-FREIVALDS1X_INT8_C ?= $(BUILD_DIR)/resnet_i8_freivalds1x.c
-FREIVALDS2X_FP32_C ?= $(BUILD_DIR)/resnet_fp32_freivalds2x.c
-FREIVALDS2X_INT8_C ?= $(BUILD_DIR)/resnet_i8_freivalds2x.c
-GVFA1X_FP32_C ?= $(BUILD_DIR)/resnet_fp32_gvfa1x.c
-GVFA1X_INT8_C ?= $(BUILD_DIR)/resnet_i8_gvfa1x.c
-GVFA2X_FP32_C ?= $(BUILD_DIR)/resnet_fp32_gvfa2x.c
-GVFA2X_INT8_C ?= $(BUILD_DIR)/resnet_i8_gvfa2x.c
+BASELINE_FP32_C ?= $(BUILD_DIR)/aww_fp32_baseline.c
+BASELINE_INT8_C ?= $(BUILD_DIR)/aww_i8_baseline.c
+ABFT_FP32_C ?= $(BUILD_DIR)/aww_fp32_abft.c
+ABFT_INT8_C ?= $(BUILD_DIR)/aww_i8_abft.c
+ABYZFT_FP32_C ?= $(BUILD_DIR)/aww_fp32_abyzft.c
+ABYZFT_INT8_C ?= $(BUILD_DIR)/aww_i8_abyzft.c
+FREIVALDS1X_FP32_C ?= $(BUILD_DIR)/aww_fp32_freivalds1x.c
+FREIVALDS1X_INT8_C ?= $(BUILD_DIR)/aww_i8_freivalds1x.c
+FREIVALDS2X_FP32_C ?= $(BUILD_DIR)/aww_fp32_freivalds2x.c
+FREIVALDS2X_INT8_C ?= $(BUILD_DIR)/aww_i8_freivalds2x.c
+GVFA1X_FP32_C ?= $(BUILD_DIR)/aww_fp32_gvfa1x.c
+GVFA1X_INT8_C ?= $(BUILD_DIR)/aww_i8_gvfa1x.c
+GVFA2X_FP32_C ?= $(BUILD_DIR)/aww_fp32_gvfa2x.c
+GVFA2X_INT8_C ?= $(BUILD_DIR)/aww_i8_gvfa2x.c
 
-BASELINE_FP32_O ?= $(BUILD_DIR)/resnet_fp32_baseline.o
-BASELINE_INT8_O ?= $(BUILD_DIR)/resnet_i8_baseline.o
-ABFT_FP32_O ?= $(BUILD_DIR)/resnet_fp32_abft.o
-ABFT_INT8_O ?= $(BUILD_DIR)/resnet_i8_abft.o
-ABYZFT_FP32_O ?= $(BUILD_DIR)/resnet_fp32_abyzft.o
-ABYZFT_INT8_O ?= $(BUILD_DIR)/resnet_i8_abyzft.o
-FREIVALDS1X_FP32_O ?= $(BUILD_DIR)/resnet_fp32_freivalds1x.o
-FREIVALDS1X_INT8_O ?= $(BUILD_DIR)/resnet_i8_freivalds1x.o
-FREIVALDS2X_FP32_O ?= $(BUILD_DIR)/resnet_fp32_freivalds2x.o
-FREIVALDS2X_INT8_O ?= $(BUILD_DIR)/resnet_i8_freivalds2x.o
-GVFA1X_FP32_O ?= $(BUILD_DIR)/resnet_fp32_gvfa1x.o
-GVFA1X_INT8_O ?= $(BUILD_DIR)/resnet_i8_gvfa1x.o
-GVFA2X_FP32_O ?= $(BUILD_DIR)/resnet_fp32_gvfa2x.o
-GVFA2X_INT8_O ?= $(BUILD_DIR)/resnet_i8_gvfa2x.o
+BASELINE_FP32_O ?= $(BUILD_DIR)/aww_fp32_baseline.o
+BASELINE_INT8_O ?= $(BUILD_DIR)/aww_i8_baseline.o
+ABFT_FP32_O ?= $(BUILD_DIR)/aww_fp32_abft.o
+ABFT_INT8_O ?= $(BUILD_DIR)/aww_i8_abft.o
+ABYZFT_FP32_O ?= $(BUILD_DIR)/aww_fp32_abyzft.o
+ABYZFT_INT8_O ?= $(BUILD_DIR)/aww_i8_abyzft.o
+FREIVALDS1X_FP32_O ?= $(BUILD_DIR)/aww_fp32_freivalds1x.o
+FREIVALDS1X_INT8_O ?= $(BUILD_DIR)/aww_i8_freivalds1x.o
+FREIVALDS2X_FP32_O ?= $(BUILD_DIR)/aww_fp32_freivalds2x.o
+FREIVALDS2X_INT8_O ?= $(BUILD_DIR)/aww_i8_freivalds2x.o
+GVFA1X_FP32_O ?= $(BUILD_DIR)/aww_fp32_gvfa1x.o
+GVFA1X_INT8_O ?= $(BUILD_DIR)/aww_i8_gvfa1x.o
+GVFA2X_FP32_O ?= $(BUILD_DIR)/aww_fp32_gvfa2x.o
+GVFA2X_INT8_O ?= $(BUILD_DIR)/aww_i8_gvfa2x.o
 
-BASELINE_FP32_BIN ?= $(BUILD_DIR)/run_fp32_baseline
-BASELINE_INT8_BIN ?= $(BUILD_DIR)/run_int8_baseline
-ABFT_FP32_BIN ?= $(BUILD_DIR)/run_fp32_abft
-ABFT_INT8_BIN ?= $(BUILD_DIR)/run_int8_abft
-ABYZFT_FP32_BIN ?= $(BUILD_DIR)/run_fp32_abyzft
-ABYZFT_INT8_BIN ?= $(BUILD_DIR)/run_int8_abyzft
-FREIVALDS1X_FP32_BIN ?= $(BUILD_DIR)/run_fp32_freivalds1x
-FREIVALDS1X_INT8_BIN ?= $(BUILD_DIR)/run_int8_freivalds1x
-FREIVALDS2X_FP32_BIN ?= $(BUILD_DIR)/run_fp32_freivalds2x
-FREIVALDS2X_INT8_BIN ?= $(BUILD_DIR)/run_int8_freivalds2x
-GVFA1X_FP32_BIN ?= $(BUILD_DIR)/run_fp32_gvfa1x
-GVFA1X_INT8_BIN ?= $(BUILD_DIR)/run_int8_gvfa1x
-GVFA2X_FP32_BIN ?= $(BUILD_DIR)/run_fp32_gvfa2x
-GVFA2X_INT8_BIN ?= $(BUILD_DIR)/run_int8_gvfa2x
+BASELINE_FP32_BIN ?= $(BUILD_DIR)/aww_fp32_baseline
+BASELINE_INT8_BIN ?= $(BUILD_DIR)/aww_int8_baseline
+ABFT_FP32_BIN ?= $(BUILD_DIR)/aww_fp32_abft
+ABFT_INT8_BIN ?= $(BUILD_DIR)/aww_int8_abft
+ABYZFT_FP32_BIN ?= $(BUILD_DIR)/aww_fp32_abyzft
+ABYZFT_INT8_BIN ?= $(BUILD_DIR)/aww_int8_abyzft
+FREIVALDS1X_FP32_BIN ?= $(BUILD_DIR)/aww_fp32_freivalds1x
+FREIVALDS1X_INT8_BIN ?= $(BUILD_DIR)/aww_int8_freivalds1x
+FREIVALDS2X_FP32_BIN ?= $(BUILD_DIR)/aww_fp32_freivalds2x
+FREIVALDS2X_INT8_BIN ?= $(BUILD_DIR)/aww_int8_freivalds2x
+GVFA1X_FP32_BIN ?= $(BUILD_DIR)/aww_fp32_gvfa1x
+GVFA1X_INT8_BIN ?= $(BUILD_DIR)/aww_int8_gvfa1x
+GVFA2X_FP32_BIN ?= $(BUILD_DIR)/aww_fp32_gvfa2x
+GVFA2X_INT8_BIN ?= $(BUILD_DIR)/aww_int8_gvfa2x
 
 BASELINE_FLAGS_STAMP := $(BUILD_DIR)/.onnx2c_flags_baseline.stamp
 ABFT_FLAGS_STAMP := $(BUILD_DIR)/.onnx2c_flags_abft.stamp
@@ -112,12 +116,12 @@ freivalds%x:
 	esac
 	$(MAKE) \
 	  FREIVALDS1X_ONNX2C_FLAGS="--conv-im2col --freivalds-gemm --freivalds-checks $*" \
-	  FREIVALDS1X_FP32_C="$(BUILD_DIR)/resnet_fp32_freivalds$*x.c" \
-	  FREIVALDS1X_INT8_C="$(BUILD_DIR)/resnet_i8_freivalds$*x.c" \
-	  FREIVALDS1X_FP32_O="$(BUILD_DIR)/resnet_fp32_freivalds$*x.o" \
-	  FREIVALDS1X_INT8_O="$(BUILD_DIR)/resnet_i8_freivalds$*x.o" \
-	  FREIVALDS1X_FP32_BIN="$(BUILD_DIR)/run_fp32_freivalds$*x" \
-	  FREIVALDS1X_INT8_BIN="$(BUILD_DIR)/run_int8_freivalds$*x" \
+	  FREIVALDS1X_FP32_C="$(BUILD_DIR)/aww_fp32_freivalds$*x.c" \
+	  FREIVALDS1X_INT8_C="$(BUILD_DIR)/aww_i8_freivalds$*x.c" \
+	  FREIVALDS1X_FP32_O="$(BUILD_DIR)/aww_fp32_freivalds$*x.o" \
+	  FREIVALDS1X_INT8_O="$(BUILD_DIR)/aww_i8_freivalds$*x.o" \
+	  FREIVALDS1X_FP32_BIN="$(BUILD_DIR)/aww_fp32_freivalds$*x" \
+	  FREIVALDS1X_INT8_BIN="$(BUILD_DIR)/aww_int8_freivalds$*x" \
 	  FREIVALDS1X_FLAGS_STAMP="$(BUILD_DIR)/.onnx2c_flags_freivalds$*x.stamp" \
 	  freivalds1x
 
@@ -128,12 +132,12 @@ gvfa%x:
 	esac
 	$(MAKE) \
 	  GVFA1X_ONNX2C_FLAGS="--conv-im2col --gvfa-gemm --gvfa-checks $*" \
-	  GVFA1X_FP32_C="$(BUILD_DIR)/resnet_fp32_gvfa$*x.c" \
-	  GVFA1X_INT8_C="$(BUILD_DIR)/resnet_i8_gvfa$*x.c" \
-	  GVFA1X_FP32_O="$(BUILD_DIR)/resnet_fp32_gvfa$*x.o" \
-	  GVFA1X_INT8_O="$(BUILD_DIR)/resnet_i8_gvfa$*x.o" \
-	  GVFA1X_FP32_BIN="$(BUILD_DIR)/run_fp32_gvfa$*x" \
-	  GVFA1X_INT8_BIN="$(BUILD_DIR)/run_int8_gvfa$*x" \
+	  GVFA1X_FP32_C="$(BUILD_DIR)/aww_fp32_gvfa$*x.c" \
+	  GVFA1X_INT8_C="$(BUILD_DIR)/aww_i8_gvfa$*x.c" \
+	  GVFA1X_FP32_O="$(BUILD_DIR)/aww_fp32_gvfa$*x.o" \
+	  GVFA1X_INT8_O="$(BUILD_DIR)/aww_i8_gvfa$*x.o" \
+	  GVFA1X_FP32_BIN="$(BUILD_DIR)/aww_fp32_gvfa$*x" \
+	  GVFA1X_INT8_BIN="$(BUILD_DIR)/aww_int8_gvfa$*x" \
 	  GVFA1X_FLAGS_STAMP="$(BUILD_DIR)/.onnx2c_flags_gvfa$*x.stamp" \
 	  gvfa1x
 
@@ -312,6 +316,22 @@ $(GVFA2X_FP32_BIN): $(GVFA2X_FP32_O) $(RUNNER_CPP) | $(BUILD_DIR)
 $(GVFA2X_INT8_BIN): $(GVFA2X_INT8_O) $(RUNNER_CPP) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(RUNNER_CPP) $(GVFA2X_INT8_O) -o $@ $(RUN_DEFS)
 
+# AWW-named executable targets.
+aww_fp32_baseline: $(BASELINE_FP32_BIN)
+aww_int8_baseline: $(BASELINE_INT8_BIN)
+aww_fp32_abft: $(ABFT_FP32_BIN)
+aww_int8_abft: $(ABFT_INT8_BIN)
+aww_fp32_abyzft: $(ABYZFT_FP32_BIN)
+aww_int8_abyzft: $(ABYZFT_INT8_BIN)
+aww_fp32_freivalds1x: $(FREIVALDS1X_FP32_BIN)
+aww_int8_freivalds1x: $(FREIVALDS1X_INT8_BIN)
+aww_fp32_freivalds2x: $(FREIVALDS2X_FP32_BIN)
+aww_int8_freivalds2x: $(FREIVALDS2X_INT8_BIN)
+aww_fp32_gvfa1x: $(GVFA1X_FP32_BIN)
+aww_int8_gvfa1x: $(GVFA1X_INT8_BIN)
+aww_fp32_gvfa2x: $(GVFA2X_FP32_BIN)
+aww_int8_gvfa2x: $(GVFA2X_INT8_BIN)
+
 # Legacy aliases kept for compatibility with older scripts.
 run_fp32: $(BASELINE_FP32_BIN)
 run_int8: $(BASELINE_INT8_BIN)
@@ -353,5 +373,6 @@ clean:
 	  $(GVFA2X_FP32_C) $(GVFA2X_INT8_C) \
 	  $(BASELINE_FLAGS_STAMP) $(ABFT_FLAGS_STAMP) $(ABYZFT_FLAGS_STAMP) $(FREIVALDS1X_FLAGS_STAMP) $(FREIVALDS2X_FLAGS_STAMP) $(GVFA1X_FLAGS_STAMP) $(GVFA2X_FLAGS_STAMP) \
 	  run_fp32_* run_int8_* \
-	  resnet_fp32_*.c resnet_i8_*.c resnet_fp32_*.o resnet_i8_*.o \
+	  aww_fp32_* aww_int8_* \
+	  aww_fp32_*.c aww_i8_*.c aww_fp32_*.o aww_i8_*.o \
 	  .onnx2c_flags_baseline.stamp .onnx2c_flags_abft.stamp .onnx2c_flags_abyzft.stamp .onnx2c_flags_freivalds1x.stamp .onnx2c_flags_freivalds2x.stamp .onnx2c_flags_gvfa1x.stamp .onnx2c_flags_gvfa2x.stamp

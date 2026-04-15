@@ -11,8 +11,13 @@ from typing import Dict, List, Tuple
 
 
 def _parse_mech(bin_name: str, prefix: str) -> str:
-    # run_fp32_abft -> abft
+    # aww_fp32_abft -> abft
     return bin_name[len(prefix) :]
+
+
+def _glob_mechs(build_dir: Path, prefix: str) -> List[str]:
+    mechs = [_parse_mech(p.name, prefix) for p in build_dir.glob(f"{prefix}*") if p.is_file()]
+    return sorted(set(mechs), key=_sort_key_mech)
 
 
 def _sort_key_mech(m: str) -> Tuple[int, int, str]:
@@ -35,17 +40,24 @@ def _sort_key_mech(m: str) -> Tuple[int, int, str]:
 
 def _discover_mechanisms(build_dir: Path, quant: str) -> List[str]:
     if quant == "fp32":
-        pref = "run_fp32_"
-        mechs = [_parse_mech(p.name, pref) for p in build_dir.glob("run_fp32_*") if p.is_file()]
+        pref = "aww_fp32_"
+        mechs = _glob_mechs(build_dir, pref)
+        if not mechs:
+            mechs = _glob_mechs(build_dir, "run_fp32_")
         return sorted(set(mechs), key=_sort_key_mech)
     if quant == "int8":
-        pref = "run_int8_"
-        mechs = [_parse_mech(p.name, pref) for p in build_dir.glob("run_int8_*") if p.is_file()]
+        pref = "aww_int8_"
+        mechs = _glob_mechs(build_dir, pref)
+        if not mechs:
+            mechs = _glob_mechs(build_dir, "run_int8_")
         return sorted(set(mechs), key=_sort_key_mech)
 
     # both: intersection to ensure fair comparison set
-    fp32 = set(_parse_mech(p.name, "run_fp32_") for p in build_dir.glob("run_fp32_*") if p.is_file())
-    int8 = set(_parse_mech(p.name, "run_int8_") for p in build_dir.glob("run_int8_*") if p.is_file())
+    fp32 = set(_glob_mechs(build_dir, "aww_fp32_"))
+    int8 = set(_glob_mechs(build_dir, "aww_int8_"))
+    if not fp32 or not int8:
+        fp32 = set(_glob_mechs(build_dir, "run_fp32_"))
+        int8 = set(_glob_mechs(build_dir, "run_int8_"))
     return sorted(fp32 & int8, key=_sort_key_mech)
 
 
@@ -114,7 +126,9 @@ def main() -> int:
         if "baseline" not in mechs:
             print(f"[{q}] warning: baseline not found; overheads will be N/A", file=sys.stderr)
 
-        prefix = "run_fp32_" if q == "fp32" else "run_int8_"
+        prefix = "aww_fp32_" if q == "fp32" else "aww_int8_"
+        if not any((build_dir / f"{prefix}{m}").exists() for m in mechs):
+            prefix = "run_fp32_" if q == "fp32" else "run_int8_"
         existing_mechs = [m for m in mechs if (build_dir / f"{prefix}{m}").exists()]
         total_runs = len(existing_mechs) * (args.warmup + args.repeats)
         done_runs = 0
