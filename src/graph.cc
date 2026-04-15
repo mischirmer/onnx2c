@@ -416,6 +416,7 @@ int64_t Graph::onnx_ir_version(void)
 #include "nodes/maxpool.h"
 #include "nodes/pad.h"
 #include "nodes/qgemm.h"
+#include "nodes/qlinearaveragepool.h"
 #include "nodes/qlinearconv.h"
 #include "nodes/qlinearelementwise.h"
 #include "nodes/qlinearmatmul.h"
@@ -517,6 +518,7 @@ Node* Graph::createNode(const onnx::NodeProto& onnx_node)
 	if (opName == "QLinearAdd") return new QLinearElementwise("QLinearAdd");
 	if (opName == "QLinearConv") return new QLinearConv;
 	if (opName == "QGemm") return new QGemm;
+	if (opName == "QLinearAveragePool") return new QLinearAveragePool;
 	if (opName == "QLinearMatMul") return new QLinearMatMul;
 	if (opName == "QLinearMul") return new QLinearElementwise("QLinearMul");
 	if (opName == "QLinearSoftmax") return new QLinearSoftmax;
