@@ -37,10 +37,10 @@ void Graph::print_source(std::ostream& dst, const std::string& interface_func_na
 	dst << "uint32_t FAULT_INJECTIONS = 0;" << std::endl;
 	dst << std::endl;
 
-	// Deterministic PRNG helpers (used by AByzFT / Freivalds).
+	// Deterministic PRNG helpers (used by AByzFT / Freivalds / GVFA).
 	// Only emit the helpers that are actually needed by the enabled mechanism(s),
 	// to keep generated code minimal and avoid confusion in analyses.
-	if (options.abyzft_gemm || options.freivalds_gemm) {
+	if (options.abyzft_gemm || options.freivalds_gemm || options.gvfa_gemm) {
 		dst << "static inline uint32_t ABYZFT_xorshift32(uint32_t* s) {" << std::endl;
 		dst << "\tuint32_t x = *s;" << std::endl;
 		dst << "\tx ^= x << 13;" << std::endl;
@@ -49,7 +49,7 @@ void Graph::print_source(std::ostream& dst, const std::string& interface_func_na
 		dst << "\t*s = x;" << std::endl;
 		dst << "\treturn x;" << std::endl;
 		dst << "}" << std::endl;
-		if (options.abyzft_gemm) {
+		if (options.abyzft_gemm || options.gvfa_gemm) {
 			dst << "static inline float ABYZFT_rand01(uint32_t* s) {" << std::endl;
 			dst << "\t// [0,1) using 24 bits" << std::endl;
 			dst << "\treturn (float)(ABYZFT_xorshift32(s) & 0x00FFFFFFu) / 16777216.0f;" << std::endl;
@@ -58,6 +58,15 @@ void Graph::print_source(std::ostream& dst, const std::string& interface_func_na
 		if (options.freivalds_gemm) {
 			dst << "static inline uint32_t ABYZFT_randbit(uint32_t* s) {" << std::endl;
 			dst << "\treturn ABYZFT_xorshift32(s) & 1u;" << std::endl;
+			dst << "}" << std::endl;
+		}
+		if (options.gvfa_gemm) {
+			dst << "static inline float ABYZFT_randn(uint32_t* s) {" << std::endl;
+			dst << "\t// Box-Muller transform for N(0,1)" << std::endl;
+			dst << "\tfloat u1 = ABYZFT_rand01(s);" << std::endl;
+			dst << "\tfloat u2 = ABYZFT_rand01(s);" << std::endl;
+			dst << "\tif( u1 < 1.0e-7f ) u1 = 1.0e-7f;" << std::endl;
+			dst << "\treturn sqrtf(-2.0f * logf(u1)) * cosf(6.28318530718f * u2);" << std::endl;
 			dst << "}" << std::endl;
 		}
 		dst << std::endl;

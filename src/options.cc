@@ -129,6 +129,8 @@ void parse_cmdline_options(int argc, const char* argv[])
 	args::Flag abyzftGemm(parser, "abyzft-gemm", "AByzFT: randomized scaling + ABFT checks for gemm-like dot-products", {"abyzft-gemm"});
 	args::Flag freivaldsGemm(parser, "freivalds-gemm", "Freivalds check (random {0,1} vector) for gemm-like dot-products", {"freivalds-gemm"});
 	args::ValueFlag<uint32_t> freivaldsChecks(parser, "N", "Number of independent Freivalds checks (default: 1)", {"freivalds-checks"});
+	args::Flag gvfaGemm(parser, "gvfa-gemm", "GVFA check (Gaussian random vector) for gemm-like dot-products", {"gvfa-gemm"});
+	args::ValueFlag<uint32_t> gvfaChecks(parser, "N", "Number of independent GVFA checks (default: 1)", {"gvfa-checks"});
 	args::ValueFlag<uint32_t> abftMtile(parser, "N", "ABFT/Freivalds/AByzFT output-channel tile size (default: 16)", {"abft-mtile"});
 	args::ValueFlag<float> abftEps(parser, "eps", "ABFT relative tolerance (default: 1e-3)", {"abft-eps"});
 	args::Flag abftWeightChecksumsCompiletime(
@@ -206,6 +208,13 @@ void parse_cmdline_options(int argc, const char* argv[])
 	if (freivaldsChecks) {
 		options.freivalds_checks = args::get(freivaldsChecks);
 		if (options.freivalds_checks == 0) options.freivalds_checks = 1;
+	}
+	if (gvfaGemm) {
+		options.gvfa_gemm = true;
+	}
+	if (gvfaChecks) {
+		options.gvfa_checks = args::get(gvfaChecks);
+		if (options.gvfa_checks == 0) options.gvfa_checks = 1;
 	}
 	if (abftMtile) {
 		options.abft_mtile = args::get(abftMtile);

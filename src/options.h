@@ -22,6 +22,8 @@ struct onnx2c_opts {
 	bool abyzft_gemm = false; // AByzFT: randomized scaling + ABFT checks
 	bool freivalds_gemm = false; // Freivalds check (random {0,1} vector) around gemm-like dot-products
 	uint32_t freivalds_checks = 1; // Number of independent Freivalds checks (default: 1)
+	bool gvfa_gemm = false; // GVFA: Freivalds variant with Gaussian random vectors
+	uint32_t gvfa_checks = 1; // Number of independent GVFA checks (default: 1)
 	uint32_t abft_mtile = 64; // Output-channel tile size for ABFT/Freivalds/AByzFT
 	float abft_eps = 1e-3f;   // Relative tolerance for checksum verification
 	bool abft_weight_checksums_compiletime = true; // Precompute ABFT weight checksums into generated C (default)

@@ -51,7 +51,7 @@ class ConvInteger : public SpatialFilter {
 	virtual void print(std::ostream& dst) const override
 	{
 		print_header_info_comment(dst);
-		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || options.freivalds_gemm;
+		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || options.freivalds_gemm || options.gvfa_gemm;
 		if (options.conv_im2col || checksum_enabled) {
 			print_im2col_matmul(dst);
 		}
@@ -145,8 +145,13 @@ class ConvInteger : public SpatialFilter {
 		}
 
 		const uint32_t mtile = options.abft_mtile ? options.abft_mtile : 16;
-		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || options.freivalds_gemm;
-		const uint32_t freivalds_checks = options.freivalds_checks ? options.freivalds_checks : 1;
+		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || options.freivalds_gemm || options.gvfa_gemm;
+		const bool randomized_enabled = options.freivalds_gemm || options.gvfa_gemm;
+		const bool freivalds_enabled = options.freivalds_gemm;
+		const bool gvfa_enabled = options.gvfa_gemm;
+		const uint32_t randomized_checks = freivalds_enabled
+		    ? (options.freivalds_checks ? options.freivalds_checks : 1)
+		    : (options.gvfa_checks ? options.gvfa_checks : 1);
 
 		std::string m_begin = (group > 1) ? "go*g" : "0";
 		std::string m_end = (group > 1) ? "go*(g+1)" : std::to_string(maps);
@@ -155,28 +160,43 @@ class ConvInteger : public SpatialFilter {
 		INDT_2 << "const uint32_t MTILE = " << mtile << ";" << std::endl;
 		INDT_2 << "const uint32_t m_base = (uint32_t)(" << m_begin << ");" << std::endl;
 		INDT_2 << "const uint32_t m_limit = (uint32_t)(" << m_end << ");" << std::endl;
-		if (checksum_enabled && options.freivalds_gemm) {
-			INDT_2 << "/* Precompute Freivalds weighted B-reductions once per tile/check */" << std::endl;
-			INDT_2 << "uint8_t freivalds_r_cache[" << freivalds_checks << "][" << tiles_per_group << "][" << mtile << "];" << std::endl;
-			INDT_2 << "int32_t freivalds_brs_cache[" << freivalds_checks << "][" << tiles_per_group << "][" << K << "];" << std::endl;
-			INDT_2 << "for( uint32_t chk=0; chk<" << freivalds_checks << "; chk++ ) {" << std::endl;
+		if (checksum_enabled && randomized_enabled) {
+			INDT_2 << "/* Precompute randomized weighted B-reductions once per tile/check */" << std::endl;
+			INDT_2 << "float randomized_r_cache[" << randomized_checks << "][" << tiles_per_group << "][" << mtile << "];" << std::endl;
+			INDT_2 << "double randomized_brs_cache[" << randomized_checks << "][" << tiles_per_group << "][" << K << "];" << std::endl;
+			INDT_2 << "for( uint32_t chk=0; chk<" << randomized_checks << "; chk++ ) {" << std::endl;
 			INDT_3 << "for( uint32_t t=0; t<" << tiles_per_group << "; t++ ) {" << std::endl;
 			INDT_4 << "uint32_t m0_pre = m_base + t*MTILE;" << std::endl;
 			INDT_4 << "if( m0_pre >= m_limit ) continue;" << std::endl;
 			INDT_4 << "uint32_t m1_pre = MIN(m0_pre + MTILE, m_limit);" << std::endl;
-			INDT_4 << "uint32_t freivalds_state = (uint32_t)(0x9E3779B9u ^ LAYER_ID ^ (uint32_t)b ^ (uint32_t)m0_pre ^ (uint32_t)(chk*0x85EBCA6Bu));" << std::endl;
-			INDT_4 << "uint32_t r_any = 0;" << std::endl;
-			INDT_4 << "for( uint32_t mi=0; mi<(m1_pre-m0_pre); mi++ ) { uint32_t bit = ABYZFT_randbit(&freivalds_state); freivalds_r_cache[chk][t][mi] = (uint8_t)bit; r_any |= bit; }" << std::endl;
-			INDT_4 << "if( !r_any && (m1_pre>m0_pre) ) freivalds_r_cache[chk][t][0] = 1u;" << std::endl;
-			INDT_4 << "for( uint32_t kk2=0; kk2<K; kk2++ ) freivalds_brs_cache[chk][t][kk2] = 0;" << std::endl;
+			if (freivalds_enabled) {
+				INDT_4 << "uint32_t rand_state = (uint32_t)(0x9E3779B9u ^ LAYER_ID ^ (uint32_t)b ^ (uint32_t)m0_pre ^ (uint32_t)(chk*0x85EBCA6Bu));" << std::endl;
+				INDT_4 << "uint32_t r_any = 0;" << std::endl;
+				INDT_4 << "for( uint32_t mi=0; mi<(m1_pre-m0_pre); mi++ ) { uint32_t bit = ABYZFT_randbit(&rand_state); randomized_r_cache[chk][t][mi] = (float)bit; r_any |= bit; }" << std::endl;
+				INDT_4 << "if( !r_any && (m1_pre>m0_pre) ) randomized_r_cache[chk][t][0] = 1.0f;" << std::endl;
+			}
+			if (gvfa_enabled) {
+				INDT_4 << "uint32_t rand_state = (uint32_t)(0x9E3779B9u ^ LAYER_ID ^ (uint32_t)b ^ (uint32_t)m0_pre ^ (uint32_t)(chk*0x85EBCA6Bu));" << std::endl;
+				INDT_4 << "for( uint32_t mi=0; mi<(m1_pre-m0_pre); mi++ ) randomized_r_cache[chk][t][mi] = ABYZFT_randn(&rand_state);" << std::endl;
+			}
+			INDT_4 << "for( uint32_t kk2=0; kk2<K; kk2++ ) randomized_brs_cache[chk][t][kk2] = 0.0;" << std::endl;
 			INDT_4 << "for( uint32_t m=m0_pre; m<m1_pre; m++ ) {" << std::endl;
-			INDT_5 << "int32_t r = (int32_t)freivalds_r_cache[chk][t][m-m0_pre];" << std::endl;
-			INDT_5 << "if( r == 0 ) continue;" << std::endl;
+			if (freivalds_enabled) {
+				INDT_5 << "if( randomized_r_cache[chk][t][m-m0_pre] == 0.0f ) continue;" << std::endl;
+			}
+			else {
+				INDT_5 << "float r = randomized_r_cache[chk][t][m-m0_pre];" << std::endl;
+			}
 			INDT_5 << "uint32_t kk2 = 0;" << std::endl;
 			INDT_5 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
 			INDT_5 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
 			INDT_5 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
-			INDT_5 << "freivalds_brs_cache[chk][t][kk2++] += (((int32_t)w[m][c0][kk0][kk1]) - w_zp);" << std::endl;
+			if (freivalds_enabled) {
+				INDT_5 << "randomized_brs_cache[chk][t][kk2++] += (double)(((int32_t)w[m][c0][kk0][kk1]) - w_zp);" << std::endl;
+			}
+			else {
+				INDT_5 << "randomized_brs_cache[chk][t][kk2++] += (double)r * (double)(((int32_t)w[m][c0][kk0][kk1]) - w_zp);" << std::endl;
+			}
 			INDT_5 << "}" << std::endl;
 			INDT_5 << "}" << std::endl;
 			INDT_5 << "}" << std::endl;
@@ -184,7 +204,7 @@ class ConvInteger : public SpatialFilter {
 			INDT_3 << "}" << std::endl;
 			INDT_2 << "}" << std::endl;
 		}
-		if (checksum_enabled && !options.freivalds_gemm) {
+		if (checksum_enabled && !randomized_enabled) {
 			auto supports_compiletime_i32_read = [](const Tensor* t) -> bool {
 				switch (t->data_type) {
 					case onnx::TensorProto_DataType_INT8:
@@ -313,7 +333,7 @@ class ConvInteger : public SpatialFilter {
 		INDT_5 << "}" << std::endl;
 		INDT_4 << "}" << std::endl;
 
-		if (checksum_enabled && !options.freivalds_gemm) {
+		if (checksum_enabled && !randomized_enabled) {
 			INDT_4 << "/* ABFT checksum reductions for this GEMM (before tile loop) */" << std::endl;
 			INDT_4 << "int64_t lhs_sum = 0;" << std::endl;
 			INDT_4 << "for( uint32_t kk2=0; kk2<K; kk2++ ) lhs_sum += (int64_t)col[kk2];" << std::endl;
@@ -339,14 +359,14 @@ class ConvInteger : public SpatialFilter {
 		}
 
 		if (checksum_enabled) {
-			if (options.freivalds_gemm) {
+			if (randomized_enabled) {
 				INDT_5 << "uint32_t tile_idx = (m0 - m_base) / MTILE;" << std::endl;
-				if (freivalds_checks == 1) {
-					INDT_5 << "int64_t freivalds_sumC = 0;" << std::endl;
+				if (randomized_checks == 1) {
+					INDT_5 << "double randomized_sumC = 0.0;" << std::endl;
 				}
 				else {
-					INDT_5 << "int64_t freivalds_sumC[" << freivalds_checks << "];" << std::endl;
-					INDT_5 << "for( uint32_t chk=0; chk<" << freivalds_checks << "; chk++ ) freivalds_sumC[chk] = 0;" << std::endl;
+					INDT_5 << "double randomized_sumC[" << randomized_checks << "];" << std::endl;
+					INDT_5 << "for( uint32_t chk=0; chk<" << randomized_checks << "; chk++ ) randomized_sumC[chk] = 0.0;" << std::endl;
 				}
 			}
 			else {
@@ -456,13 +476,23 @@ class ConvInteger : public SpatialFilter {
 		INDT_5 << "}" << std::endl;
 
 		if (checksum_enabled) {
-			if (options.freivalds_gemm) {
-				if (freivalds_checks == 1) {
-					INDT_5 << "freivalds_sumC += (int64_t)acc32 * (int64_t)freivalds_r_cache[0][tile_idx][m-m0];" << std::endl;
+			if (randomized_enabled) {
+				if (randomized_checks == 1) {
+					if (freivalds_enabled) {
+						INDT_5 << "if( randomized_r_cache[0][tile_idx][m-m0] != 0.0f ) randomized_sumC += (double)acc32;" << std::endl;
+					}
+					else {
+						INDT_5 << "randomized_sumC += (double)acc32 * (double)randomized_r_cache[0][tile_idx][m-m0];" << std::endl;
+					}
 				}
 				else {
-					INDT_5 << "for( uint32_t chk=0; chk<" << freivalds_checks << "; chk++ ) {" << std::endl;
-					INDT_5 << "freivalds_sumC[chk] += (int64_t)acc32 * (int64_t)freivalds_r_cache[chk][tile_idx][m-m0];" << std::endl;
+					INDT_5 << "for( uint32_t chk=0; chk<" << randomized_checks << "; chk++ ) {" << std::endl;
+					if (freivalds_enabled) {
+						INDT_5 << "if( randomized_r_cache[chk][tile_idx][m-m0] != 0.0f ) randomized_sumC[chk] += (double)acc32;" << std::endl;
+					}
+					else {
+						INDT_5 << "randomized_sumC[chk] += (double)acc32 * (double)randomized_r_cache[chk][tile_idx][m-m0];" << std::endl;
+					}
 					INDT_5 << "}" << std::endl;
 				}
 			}
@@ -475,18 +505,28 @@ class ConvInteger : public SpatialFilter {
 		INDT_5 << "} /* m */" << std::endl;
 
 		if (checksum_enabled) {
-			if (options.freivalds_gemm) {
-				INDT_5 << "/* Freivalds verify (integer domain): r^T C_tile == A^T (B_tile r) */" << std::endl;
-				if (freivalds_checks == 1) {
-					INDT_5 << "int64_t pred = 0;" << std::endl;
-					INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += (int64_t)(col[kk2] * freivalds_brs_cache[0][tile_idx][kk2]);" << std::endl;
-					INDT_5 << "if( freivalds_sumC != pred ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; }" << std::endl;
+			if (randomized_enabled) {
+				INDT_5 << "/* Randomized verify: r^T C_tile == A^T (B_tile r) */" << std::endl;
+				if (randomized_checks == 1) {
+					INDT_5 << "double pred = 0.0;" << std::endl;
+					INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += (double)col[kk2] * randomized_brs_cache[0][tile_idx][kk2];" << std::endl;
+					if (gvfa_enabled) {
+						INDT_5 << "if( fabs(randomized_sumC - pred) > (double)" << options.abft_eps << " ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; }" << std::endl;
+					}
+					else {
+						INDT_5 << "if( randomized_sumC != pred ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; }" << std::endl;
+					}
 				}
 				else {
-					INDT_5 << "for( uint32_t chk=0; chk<" << freivalds_checks << "; chk++ ) {" << std::endl;
-					INDT_5 << "int64_t pred = 0;" << std::endl;
-					INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += (int64_t)(col[kk2] * freivalds_brs_cache[chk][tile_idx][kk2]);" << std::endl;
-					INDT_5 << "if( freivalds_sumC[chk] != pred ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; break; }" << std::endl;
+					INDT_5 << "for( uint32_t chk=0; chk<" << randomized_checks << "; chk++ ) {" << std::endl;
+					INDT_5 << "double pred = 0.0;" << std::endl;
+					INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += (double)col[kk2] * randomized_brs_cache[chk][tile_idx][kk2];" << std::endl;
+					if (gvfa_enabled) {
+						INDT_5 << "if( fabs(randomized_sumC[chk] - pred) > (double)" << options.abft_eps << " ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; break; }" << std::endl;
+					}
+					else {
+						INDT_5 << "if( randomized_sumC[chk] != pred ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; break; }" << std::endl;
+					}
 					INDT_5 << "}" << std::endl;
 				}
 			}
@@ -500,7 +540,7 @@ class ConvInteger : public SpatialFilter {
 		INDT_4 << "} /* m0 */" << std::endl;
 		INDT_3 << "} /* o1 */" << std::endl;
 		INDT_2 << "} /* o0 */" << std::endl;
-		if (checksum_enabled && !options.freivalds_gemm) {
+		if (checksum_enabled && !randomized_enabled) {
 			INDT_2 << "for( uint32_t t=0; t<" << tiles_per_group << "; t++ ) {" << std::endl;
 			INDT_3 << "if( abft_sumC_acc[t] != abft_pred_acc[t] ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; }" << std::endl;
 			INDT_2 << "}" << std::endl;

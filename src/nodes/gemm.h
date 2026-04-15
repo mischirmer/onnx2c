@@ -82,8 +82,13 @@ class Gemm : public Node {
 
 		std::string A_el = transA ? "A[i][r]" : "A[r][i]";
 		std::string B_idx = transB ? "[c][i]" : "[i][c]";
-		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || options.freivalds_gemm;
+		const bool randomized_enabled = options.freivalds_gemm || options.gvfa_gemm;
+		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || randomized_enabled;
 		const bool freivalds_enabled = options.freivalds_gemm;
+		const bool gvfa_enabled = options.gvfa_gemm;
+		const uint32_t randomized_checks = freivalds_enabled
+		    ? (options.freivalds_checks ? options.freivalds_checks : 1)
+		    : (options.gvfa_checks ? options.gvfa_checks : 1);
 
 		// Cast optional C matrix to generated variable
 		// "C_[M][N]"
@@ -197,34 +202,62 @@ class Gemm : public Node {
 
 		INDT_2 << "}" << std::endl;
 		if (checksum_enabled) {
-			if (freivalds_enabled) {
-				INDT_2 << "/* Freivalds verify: (A * (B*r)) + (C*r) == (Y * r) */" << std::endl;
-				INDT_2 << "for( uint32_t chk=0; chk<" << (options.freivalds_checks ? options.freivalds_checks : 1) << "u; chk++ ) {" << std::endl;
+			if (freivalds_enabled || gvfa_enabled) {
+				INDT_2 << "/* Randomized verify (Freivalds/GVFA): (A * (B*r)) + (C*r) == (Y * r) */" << std::endl;
+				INDT_2 << "for( uint32_t chk=0; chk<" << randomized_checks << "u; chk++ ) {" << std::endl;
 				INDT_3 << "uint32_t freivalds_state = (uint32_t)(0x9E3779B9u ^ LAYER_ID ^ r ^ (uint32_t)(chk*0x85EBCA6Bu));" << std::endl;
-				INDT_3 << "uint32_t r_vec[N];" << std::endl;
-				INDT_3 << "uint32_t r_any = 0;" << std::endl;
-				INDT_3 << "for( uint32_t cc=0; cc<N; cc++ ) { r_vec[cc] = ABYZFT_randbit(&freivalds_state); r_any |= r_vec[cc]; }" << std::endl;
-				INDT_3 << "if( !r_any && N>0u ) r_vec[0] = 1u;" << std::endl;
+				if (freivalds_enabled)
+					INDT_3 << "uint8_t r_mask[N];" << std::endl;
+				else
+					INDT_3 << "float r_vec[N];" << std::endl;
+				if (freivalds_enabled) {
+					INDT_3 << "uint32_t r_any = 0;" << std::endl;
+					INDT_3 << "for( uint32_t cc=0; cc<N; cc++ ) { uint32_t bit = ABYZFT_randbit(&freivalds_state); r_mask[cc] = (uint8_t)bit; r_any |= bit; }" << std::endl;
+					INDT_3 << "if( !r_any && N>0u ) r_mask[0] = 1u;" << std::endl;
+				}
+				else {
+					INDT_3 << "for( uint32_t cc=0; cc<N; cc++ ) r_vec[cc] = ABYZFT_randn(&freivalds_state);" << std::endl;
+				}
 				INDT_3 << "float b_rs[K];" << std::endl;
 				INDT_3 << "for( uint32_t i=0; i<K; i++ ) b_rs[i] = 0.0f;" << std::endl;
 				INDT_3 << "float bias_sum = 0.0f;" << std::endl;
 				INDT_3 << "float sumC = 0.0f;" << std::endl;
-				INDT_3 << "for( uint32_t cc=0; cc<N; cc++ ) if( r_vec[cc] ) {" << std::endl;
-				if (C) {
-					INDT_4 << "bias_sum += C_"
-					       << ((C0 <= 1) ? "[0]" : "[r]")
-					       << ((C1 <= 1) ? "[0]" : "[cc]")
-					       << " * beta;" << std::endl;
-				}
-				INDT_4 << "sumC += acc_row[cc];" << std::endl;
-				INDT_4 << "for( uint32_t i=0; i<K; i++ ) {" << std::endl;
-				if (transB) {
-					INDT_5 << "b_rs[i] += " << constant_acces_code("B[cc][i]") << ";" << std::endl;
+				INDT_3 << "for( uint32_t cc=0; cc<N; cc++ ) {" << std::endl;
+				if (freivalds_enabled) {
+					INDT_4 << "if( !r_mask[cc] ) continue;" << std::endl;
+					if (C) {
+						INDT_4 << "bias_sum += C_"
+						       << ((C0 <= 1) ? "[0]" : "[r]")
+						       << ((C1 <= 1) ? "[0]" : "[cc]")
+						       << " * beta;" << std::endl;
+					}
+					INDT_4 << "sumC += acc_row[cc];" << std::endl;
+					INDT_4 << "for( uint32_t i=0; i<K; i++ ) {" << std::endl;
+					if (transB) {
+						INDT_5 << "b_rs[i] += " << constant_acces_code("B[cc][i]") << ";" << std::endl;
+					}
+					else {
+						INDT_5 << "b_rs[i] += " << constant_acces_code("B[i][cc]") << ";" << std::endl;
+					}
+					INDT_4 << "}" << std::endl;
 				}
 				else {
-					INDT_5 << "b_rs[i] += " << constant_acces_code("B[i][cc]") << ";" << std::endl;
+					if (C) {
+						INDT_4 << "bias_sum += C_"
+						       << ((C0 <= 1) ? "[0]" : "[r]")
+						       << ((C1 <= 1) ? "[0]" : "[cc]")
+						       << " * beta * r_vec[cc];" << std::endl;
+					}
+					INDT_4 << "sumC += acc_row[cc] * r_vec[cc];" << std::endl;
+					INDT_4 << "for( uint32_t i=0; i<K; i++ ) {" << std::endl;
+					if (transB) {
+						INDT_5 << "b_rs[i] += " << constant_acces_code("B[cc][i]") << " * r_vec[cc];" << std::endl;
+					}
+					else {
+						INDT_5 << "b_rs[i] += " << constant_acces_code("B[i][cc]") << " * r_vec[cc];" << std::endl;
+					}
+					INDT_4 << "}" << std::endl;
 				}
-				INDT_4 << "}" << std::endl;
 				INDT_3 << "}" << std::endl;
 				INDT_3 << "float pred = bias_sum;" << std::endl;
 				INDT_3 << "for( uint32_t i=0; i<K; i++ ) pred += alpha * (" << A_el << ") * b_rs[i];" << std::endl;

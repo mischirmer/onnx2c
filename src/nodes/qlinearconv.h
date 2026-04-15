@@ -262,13 +262,19 @@ class QLinearConv : public Node {
 		}
 
 		const uint32_t mtile = options.abft_mtile ? options.abft_mtile : 16;
-		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || options.freivalds_gemm;
+		const bool randomized_enabled = options.freivalds_gemm || options.gvfa_gemm;
+		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || randomized_enabled;
+		const bool freivalds_enabled = options.freivalds_gemm;
+		const bool gvfa_enabled = options.gvfa_gemm;
+		const uint32_t randomized_checks = freivalds_enabled
+		    ? (options.freivalds_checks ? options.freivalds_checks : 1)
+		    : (options.gvfa_checks ? options.gvfa_checks : 1);
 		std::string m_begin = (group > 1) ? "go*g" : "0";
 		std::string m_end = (group > 1) ? "go*(g+1)" : std::to_string(maps);
 		const uint32_t tiles_per_group = ((group > 1 ? go : maps) + mtile - 1) / mtile;
 
 		INDT_2 << "const uint32_t MTILE = " << mtile << ";" << std::endl;
-		if (checksum_enabled && !options.freivalds_gemm) {
+		if (checksum_enabled && !randomized_enabled) {
 			INDT_2 << "const uint32_t m_base = (uint32_t)(" << m_begin << ");" << std::endl;
 			INDT_2 << "const uint32_t m_limit = (uint32_t)(" << m_end << ");" << std::endl;
 			INDT_2 << "/* Precompute ABFT B-tile checksums once per group */" << std::endl;
@@ -349,7 +355,7 @@ class QLinearConv : public Node {
 		}
 
 		if (checksum_enabled) {
-			if (options.freivalds_gemm) {
+			if (freivalds_enabled || gvfa_enabled) {
 				INDT_5 << "/* Freivalds: store accumulator tile for multiple checks */" << std::endl;
 				INDT_5 << "int32_t acc_tile[" << mtile << "];" << std::endl;
 			}
@@ -483,7 +489,7 @@ class QLinearConv : public Node {
 		}
 
 		if (checksum_enabled) {
-			if (options.freivalds_gemm) {
+			if (freivalds_enabled || gvfa_enabled) {
 				INDT_5 << "acc_tile[m-m0] = acc32;" << std::endl;
 			}
 			else {
@@ -506,41 +512,70 @@ class QLinearConv : public Node {
 		INDT_5 << "} /* m */" << std::endl;
 
 		if (checksum_enabled) {
-			if (options.freivalds_gemm) {
-				INDT_5 << "/* Freivalds verify (integer domain): r^T C_tile == (A^T (B_tile r)) + bias */" << std::endl;
-				INDT_5 << "for( uint32_t chk=0; chk<" << (options.freivalds_checks ? options.freivalds_checks : 1) << "u; chk++ ) {" << std::endl;
+			if (freivalds_enabled || gvfa_enabled) {
+				INDT_5 << "/* Randomized verify (Freivalds/GVFA): r^T C_tile == (A^T (B_tile r)) + bias */" << std::endl;
+				INDT_5 << "for( uint32_t chk=0; chk<" << randomized_checks << "u; chk++ ) {" << std::endl;
 				INDT_5 << "uint32_t freivalds_state = (uint32_t)(0x9E3779B9u ^ LAYER_ID ^ (uint32_t)b ^ (uint32_t)o0";
 				if (n_data_dims == 2) dst << " ^ (uint32_t)o1";
 				dst << " ^ (uint32_t)m0 ^ (uint32_t)(chk*0x85EBCA6Bu));" << std::endl;
-				INDT_5 << "uint32_t r_vec[" << mtile << "];" << std::endl;
-				INDT_5 << "uint32_t r_any = 0;" << std::endl;
-				INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) { r_vec[mi] = ABYZFT_randbit(&freivalds_state); r_any |= r_vec[mi]; }" << std::endl;
-				INDT_5 << "if( !r_any && (m1>m0) ) r_vec[0] = 1u;" << std::endl;
-				INDT_5 << "int32_t b_rs[" << K << "];" << std::endl;
-				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) b_rs[kk2] = 0;" << std::endl;
-				INDT_5 << "int64_t bias_sum = 0;" << std::endl;
-				INDT_5 << "int64_t sumC = 0;" << std::endl;
-				INDT_5 << "for( uint32_t m=m0; m<m1; m++ ) if( r_vec[m-m0] ) {" << std::endl;
-				if (get_number_of_inputs() >= 9)
-					INDT_5 << "bias_sum += (int64_t)bias[m];" << std::endl;
-				INDT_5 << "sumC += (int64_t)acc_tile[m-m0];" << std::endl;
-				INDT_5 << "uint32_t kk2 = 0;" << std::endl;
-				INDT_5 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
-				INDT_5 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
-				if (n_data_dims == 1) {
-					INDT_5 << "b_rs[kk2++] += ((int32_t)w[m][c0][kk0] - (int32_t)w_zero_point" << w_zero_idx << ");" << std::endl;
+				if (freivalds_enabled)
+					INDT_5 << "uint8_t r_mask[" << mtile << "];" << std::endl;
+				else
+					INDT_5 << "float r_vec[" << mtile << "];" << std::endl;
+				if (freivalds_enabled) {
+					INDT_5 << "uint32_t r_any = 0;" << std::endl;
+					INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) { uint32_t bit = ABYZFT_randbit(&freivalds_state); r_mask[mi] = (uint8_t)bit; r_any |= bit; }" << std::endl;
+					INDT_5 << "if( !r_any && (m1>m0) ) r_mask[0] = 1u;" << std::endl;
+				} else {
+					INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) r_vec[mi] = ABYZFT_randn(&freivalds_state);" << std::endl;
 				}
-				else {
-					INDT_5 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
-					INDT_5 << "b_rs[kk2++] += ((int32_t)w[m][c0][kk0][kk1] - (int32_t)w_zero_point" << w_zero_idx << ");" << std::endl;
+				INDT_5 << "double b_rs[" << K << "];" << std::endl;
+				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) b_rs[kk2] = 0.0;" << std::endl;
+				INDT_5 << "double bias_sum = 0.0;" << std::endl;
+				INDT_5 << "double sumC = 0.0;" << std::endl;
+				INDT_5 << "for( uint32_t m=m0; m<m1; m++ ) {" << std::endl;
+				if (freivalds_enabled) {
+					INDT_5 << "if( !r_mask[m-m0] ) continue;" << std::endl;
+					if (get_number_of_inputs() >= 9)
+						INDT_5 << "bias_sum += (double)bias[m];" << std::endl;
+					INDT_5 << "sumC += (double)acc_tile[m-m0];" << std::endl;
+					INDT_5 << "uint32_t kk2 = 0;" << std::endl;
+					INDT_5 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
+					INDT_5 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
+					if (n_data_dims == 1) {
+						INDT_5 << "b_rs[kk2++] += (double)((int32_t)w[m][c0][kk0] - (int32_t)w_zero_point" << w_zero_idx << ");" << std::endl;
+					}
+					else {
+						INDT_5 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
+						INDT_5 << "b_rs[kk2++] += (double)((int32_t)w[m][c0][kk0][kk1] - (int32_t)w_zero_point" << w_zero_idx << ");" << std::endl;
+						INDT_5 << "}" << std::endl;
+					}
+					INDT_5 << "}" << std::endl;
+					INDT_5 << "}" << std::endl;
+				} else {
+					if (get_number_of_inputs() >= 9)
+						INDT_5 << "bias_sum += (double)bias[m] * (double)r_vec[m-m0];" << std::endl;
+					INDT_5 << "sumC += (double)acc_tile[m-m0] * (double)r_vec[m-m0];" << std::endl;
+					INDT_5 << "uint32_t kk2 = 0;" << std::endl;
+					INDT_5 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
+					INDT_5 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
+					if (n_data_dims == 1) {
+						INDT_5 << "b_rs[kk2++] += (double)((int32_t)w[m][c0][kk0] - (int32_t)w_zero_point" << w_zero_idx << ") * (double)r_vec[m-m0];" << std::endl;
+					}
+					else {
+						INDT_5 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
+						INDT_5 << "b_rs[kk2++] += (double)((int32_t)w[m][c0][kk0][kk1] - (int32_t)w_zero_point" << w_zero_idx << ") * (double)r_vec[m-m0];" << std::endl;
+						INDT_5 << "}" << std::endl;
+					}
+					INDT_5 << "}" << std::endl;
 					INDT_5 << "}" << std::endl;
 				}
 				INDT_5 << "}" << std::endl;
-				INDT_5 << "}" << std::endl;
-				INDT_5 << "}" << std::endl;
-				INDT_5 << "int64_t pred = bias_sum;" << std::endl;
-				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += (int64_t)col[kk2] * (int64_t)b_rs[kk2];" << std::endl;
-				INDT_5 << "if( sumC != pred ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; break; }" << std::endl;
+				INDT_5 << "double pred = bias_sum;" << std::endl;
+				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) pred += (double)col[kk2] * b_rs[kk2];" << std::endl;
+				INDT_5 << "double diff = fabs(pred - sumC);" << std::endl;
+				INDT_5 << "double tol = " << options.abft_eps << " * (fabs(pred) + 1.0);" << std::endl;
+				INDT_5 << "if( diff > tol ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; break; }" << std::endl;
 				INDT_5 << "}" << std::endl;
 			}
 			else {
@@ -557,7 +592,7 @@ class QLinearConv : public Node {
 		if (n_data_dims == 2)
 			INDT_3 << "} /* o1 */" << std::endl;
 		INDT_2 << "} /* o0 */" << std::endl;
-		if (checksum_enabled && !options.freivalds_gemm) {
+		if (checksum_enabled && !randomized_enabled) {
 			INDT_2 << "for( uint32_t t=0; t<" << tiles_per_group << "; t++ ) {" << std::endl;
 			INDT_3 << "if( abft_sumC_acc[t] != abft_pred_acc[t] ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; }" << std::endl;
 			INDT_2 << "}" << std::endl;
