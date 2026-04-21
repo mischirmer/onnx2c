@@ -78,6 +78,7 @@ void print_optimization_passes(void)
 	std::cout << "Available optimization passes:" << std::endl;
 	std::cout << " - 'unionize' (defaut:on)" << std::endl;
 	std::cout << " - 'fold_casts' (defaut:on)" << std::endl;
+	std::cout << " - 'im2col' (default:off)" << std::endl;
 	std::cout << " - 'none' (disable all optimization passes)" << std::endl;
 }
 
@@ -89,6 +90,7 @@ void store_optimization_passes(const std::string& opt)
 	// then enable those that were requested
 	options.opt_unionize = false;
 	options.opt_fold_casts = false;
+	options.opt_im2col = false;
 	if (opt == "none") {
 		LOG(TRACE) << "Disabling all optimizations: " << opt << std::endl;
 		return;
@@ -109,6 +111,10 @@ void store_optimization_passes(const std::string& opt)
 		else if (item == "fold_casts") {
 			LOG(DEBUG) << "Enabling 'Fold casts' optimization pass" << std::endl;
 			options.opt_fold_casts = true;
+		}
+		else if (item == "im2col") {
+			LOG(DEBUG) << "Enabling 'im2col' optimization pass" << std::endl;
+			options.opt_im2col = true;
 		}
 		else {
 			LOG(WARNING) << "Optimization pass " << item << " does not exist" << std::endl;
