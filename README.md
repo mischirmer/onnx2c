@@ -86,6 +86,7 @@ See the [GCC wiki on floating point maths](https://gcc.gnu.org/wiki/FloatingPoin
 Onnx2c has a few optimization passes that modify the generated output:
  - Tensor unionization to wrap intermediate tensors in unions to help the compiler re-use the heap memory.
  - Removing `Cast` nodes, by modifying their predecessor node's output tensor.
+ - `im2col` optimization for convolution layers.
  - Optimization for AVR processors to put constants into instruction memory.
 
 `./onnx2c -h` prints out all available command line options.
