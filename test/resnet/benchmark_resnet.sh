@@ -3,8 +3,10 @@
 
 set -e
 
-BUILD_DIR="/workspace/build"
-MODEL="/workspace/test/resnet/resnet18-v2-7.onnx"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BUILD_DIR="$REPO_ROOT/build"
+MODEL="$SCRIPT_DIR/resnet18-v2-7.onnx"
 MODEL_NAME="resnet18_bench"
 
 echo "============================================"
@@ -12,6 +14,11 @@ echo "  ResNet-18 Benchmark"
 echo "  Comparing im2col transformation"
 echo "============================================"
 echo ""
+
+if [ ! -f "$MODEL" ]; then
+    echo "Downloading ResNet-18 model..."
+    wget -O "$MODEL" https://huggingface.co/onnxmodelzoo/resnet18-v2-7/resolve/main/resnet18-v2-7.onnx
+fi
 
 # Generate C code without im2col (skip if already exists)
 echo "[1/4] Generating C code without im2col..."
