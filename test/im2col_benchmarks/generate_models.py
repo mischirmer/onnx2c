@@ -164,6 +164,8 @@ def main() -> None:
         ConvCase("conv_f32_k1_pointwise_32", 16, 32, 32, 32, 1),
         ConvCase("conv_f32_k3_s1_pad1_32", 16, 16, 32, 32, 3, pad=1),
         ConvCase("conv_f32_k3_s2_pad1_64", 8, 16, 64, 64, 3, stride=2, pad=1),
+        ConvCase("conv_f32_k3_s1_pad1_128", 8, 16, 128, 128, 3, pad=1),
+        ConvCase("conv_f32_k3_s2_pad1_224", 3, 16, 224, 224, 3, stride=2, pad=1),
         ConvCase("conv_f32_k5_s1_pad2_32", 8, 8, 32, 32, 5, pad=2, bias=True),
         ConvCase("conv_f32_k3_d2_pad2_32", 8, 8, 32, 32, 3, pad=2, dilation=2),
         ConvCase("conv_f32_depthwise_k3_32", 16, 16, 32, 32, 3, pad=1, group=16),
@@ -174,6 +176,7 @@ def main() -> None:
     convinteger_cases = [
         (ConvCase("convinteger_u8_k3_s1_pad1_32", 8, 8, 32, 32, 3, pad=1), False),
         (ConvCase("convinteger_u8_k3_s2_pad1_64_zp", 8, 16, 64, 64, 3, stride=2, pad=1), True),
+        (ConvCase("convinteger_u8_k3_s1_pad1_128", 8, 8, 128, 128, 3, pad=1), False),
         (ConvCase("convinteger_u8_k5_s1_pad2_32_zp", 8, 8, 32, 32, 5, pad=2), True),
     ]
     for case, with_zero_points in convinteger_cases:
@@ -183,6 +186,7 @@ def main() -> None:
         ConvCase("qlinearconv_u8_k1_pointwise_32", 16, 32, 32, 32, 1),
         ConvCase("qlinearconv_u8_k3_s1_pad1_32", 8, 8, 32, 32, 3, pad=1),
         ConvCase("qlinearconv_u8_k3_s2_pad1_64", 8, 16, 64, 64, 3, stride=2, pad=1),
+        ConvCase("qlinearconv_u8_k3_s1_pad1_128", 8, 8, 128, 128, 3, pad=1),
         ConvCase("qlinearconv_u8_depthwise_k3_32", 8, 8, 32, 32, 3, pad=1, group=8),
     ]
     for case in qlinearconv_cases:

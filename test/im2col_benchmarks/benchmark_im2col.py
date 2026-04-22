@@ -13,6 +13,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import onnx
 
 
@@ -57,8 +58,12 @@ extern void entry(const INPUT_CTYPE* input, OUTPUT_CTYPE* output);
 
 int main(int argc, char** argv) {
     int iterations = 1000;
+    const char* output_path = NULL;
     if (argc > 1) {
         iterations = atoi(argv[1]);
+    }
+    if (argc > 2) {
+        output_path = argv[2];
     }
 
     INPUT_CTYPE* input = malloc((size_t)INPUT_ELEMS * sizeof(INPUT_CTYPE));
@@ -92,6 +97,24 @@ int main(int argc, char** argv) {
     printf("Average per iteration: %.6f ms\n", avg_ms);
     printf("Throughput: %.2f iterations/sec\n", iterations / elapsed);
 
+    if (output_path != NULL) {
+        FILE* fp = fopen(output_path, "wb");
+        if (!fp) {
+            fprintf(stderr, "failed to open output dump file\n");
+            free(input);
+            free(output);
+            return 1;
+        }
+        size_t written = fwrite(output, sizeof(OUTPUT_CTYPE), (size_t)OUTPUT_ELEMS, fp);
+        fclose(fp);
+        if (written != (size_t)OUTPUT_ELEMS) {
+            fprintf(stderr, "failed to write output dump file\n");
+            free(input);
+            free(output);
+            return 1;
+        }
+    }
+
     free(input);
     free(output);
     return 0;
@@ -105,6 +128,14 @@ class ModelMeta:
     input_elems: int
     output_ctype: str
     output_elems: int
+    input_shape: tuple[int, ...]
+    output_shape: tuple[int, ...]
+    kernel_shape: tuple[int, ...]
+    strides: tuple[int, ...]
+    dilations: tuple[int, ...]
+    pads: tuple[int, ...]
+    group: int
+    op_type: str
 
 
 @dataclass(frozen=True)
@@ -112,6 +143,7 @@ class BenchmarkResult:
     model: str
     baseline_ms: float
     im2col_ms: float
+    meta: ModelMeta
 
     @property
     def speedup(self) -> float:
@@ -148,6 +180,10 @@ def elem_count(value: onnx.ValueInfoProto) -> int:
     return functools.reduce(operator.mul, dims, 1)
 
 
+def shape_tuple(value: onnx.ValueInfoProto) -> tuple[int, ...]:
+    return tuple(dim.dim_value for dim in value.type.tensor_type.shape.dim)
+
+
 def ctype(value: onnx.ValueInfoProto) -> str:
     elem_type = value.type.tensor_type.elem_type
     if elem_type not in TYPE_MAP:
@@ -157,16 +193,41 @@ def ctype(value: onnx.ValueInfoProto) -> str:
 
 def model_meta(model_path: Path) -> ModelMeta:
     model = onnx.load(model_path)
+    if len(model.graph.node) != 1:
+        raise ValueError(f"{model_path.name}: expected exactly one graph node")
+
+    node = model.graph.node[0]
+    attrs = {attr.name: onnx.helper.get_attribute_value(attr) for attr in node.attribute}
     initializers = {tensor.name for tensor in model.graph.initializer}
+    initializers_by_name = {tensor.name: tensor for tensor in model.graph.initializer}
     graph_inputs = [value for value in model.graph.input if value.name not in initializers]
     if len(graph_inputs) != 1 or len(model.graph.output) != 1:
         raise ValueError(f"{model_path.name}: expected one non-initializer input and one output")
+
+    weight_name = node.input[1] if len(node.input) > 1 else None
+    weight_shape = ()
+    if weight_name and weight_name in initializers_by_name:
+        weight_shape = tuple(initializers_by_name[weight_name].dims)
+
+    kernel_shape = tuple(attrs.get("kernel_shape", weight_shape[2:4] if len(weight_shape) >= 4 else ()))
+    strides = tuple(attrs.get("strides", [1, 1]))
+    dilations = tuple(attrs.get("dilations", [1, 1]))
+    pads = tuple(attrs.get("pads", [0, 0, 0, 0]))
+    group = int(attrs.get("group", 1))
 
     return ModelMeta(
         input_ctype=ctype(graph_inputs[0]),
         input_elems=elem_count(graph_inputs[0]),
         output_ctype=ctype(model.graph.output[0]),
         output_elems=elem_count(model.graph.output[0]),
+        input_shape=shape_tuple(graph_inputs[0]),
+        output_shape=shape_tuple(model.graph.output[0]),
+        kernel_shape=kernel_shape,
+        strides=strides,
+        dilations=dilations,
+        pads=pads,
+        group=group,
+        op_type=node.op_type,
     )
 
 
@@ -214,9 +275,74 @@ def parse_avg_ms(output: str) -> float:
     return float(match.group(1))
 
 
-def run_binary(binary: Path, iterations: int) -> float:
-    result = run([str(binary), str(iterations)])
+def run_binary(binary: Path, iterations: int, output_dump: Path | None = None) -> float:
+    cmd = [str(binary), str(iterations)]
+    if output_dump is not None:
+        cmd.append(str(output_dump))
+    result = run(cmd)
     return parse_avg_ms(result.stdout)
+
+
+def numpy_dtype(c_type: str) -> np.dtype:
+    mapping = {
+        "float": np.float32,
+        "double": np.float64,
+        "_Float16": np.float16,
+        "uint8_t": np.uint8,
+        "int8_t": np.int8,
+        "uint16_t": np.uint16,
+        "int16_t": np.int16,
+        "int32_t": np.int32,
+        "int64_t": np.int64,
+        "uint32_t": np.uint32,
+        "uint64_t": np.uint64,
+    }
+    if c_type not in mapping:
+        raise ValueError(f"unsupported C tensor type for numpy conversion: {c_type}")
+    return np.dtype(mapping[c_type])
+
+
+def compare_output_tensors(meta: ModelMeta, baseline_dump: Path, im2col_dump: Path) -> tuple[bool, str]:
+    dtype = numpy_dtype(meta.output_ctype)
+    baseline = np.fromfile(baseline_dump, dtype=dtype, count=meta.output_elems)
+    im2col = np.fromfile(im2col_dump, dtype=dtype, count=meta.output_elems)
+
+    if baseline.size != meta.output_elems or im2col.size != meta.output_elems:
+        return False, "unexpected output dump size"
+
+    # Always compare numerically with a fixed strict tolerance.
+    atol, rtol = 1e-8, 1e-8
+    baseline_cmp = baseline.astype(np.float64, copy=False)
+    im2col_cmp = im2col.astype(np.float64, copy=False)
+    equal = np.allclose(baseline_cmp, im2col_cmp, atol=atol, rtol=rtol, equal_nan=True)
+    if equal:
+        return True, ""
+
+    # float32 paths can differ by a few ULPs because im2col uses a local accumulator
+    # while baseline Conv updates y[...] directly in the inner loop.
+    if meta.output_ctype == "float":
+        baseline_i = baseline.view(np.int32).astype(np.int64, copy=False)
+        im2col_i = im2col.view(np.int32).astype(np.int64, copy=False)
+        baseline_ord = np.where(baseline_i < 0, np.int64(0x80000000) - baseline_i, baseline_i)
+        im2col_ord = np.where(im2col_i < 0, np.int64(0x80000000) - im2col_i, im2col_i)
+        ulp_diff = np.abs(baseline_ord - im2col_ord)
+        max_ulp = int(np.max(ulp_diff))
+        if max_ulp <= 2:
+            return True, ""
+
+    abs_diff = np.abs(baseline_cmp - im2col_cmp)
+    max_idx = int(np.nanargmax(abs_diff))
+    max_abs = float(abs_diff[max_idx])
+    base_val = float(baseline_cmp[max_idx])
+    im2col_val = float(im2col_cmp[max_idx])
+    rel = max_abs / max(abs(base_val), 1e-30)
+    return (
+        False,
+        (
+            f"max abs diff {max_abs:.6e} (rel {rel:.6e}) at output index {max_idx}: "
+            f"baseline={base_val:.6e}, im2col={im2col_val:.6e}, tol(atol={atol}, rtol={rtol})"
+        ),
+    )
 
 
 def benchmark_model(args: argparse.Namespace, model: Path, wrapper: Path) -> BenchmarkResult:
@@ -227,39 +353,93 @@ def benchmark_model(args: argparse.Namespace, model: Path, wrapper: Path) -> Ben
     im2col_c = args.out_dir / f"{name}_im2col.c"
     baseline_bin = args.out_dir / f"{name}_baseline"
     im2col_bin = args.out_dir / f"{name}_im2col"
+    baseline_dump = args.out_dir / f"{name}_baseline.out.bin"
+    im2col_dump = args.out_dir / f"{name}_im2col.out.bin"
 
     generate_c(args.onnx2c, model, baseline_c, im2col=False)
     generate_c(args.onnx2c, model, im2col_c, im2col=True)
     compile_binary(args.gcc, baseline_c, wrapper, baseline_bin, meta)
     compile_binary(args.gcc, im2col_c, wrapper, im2col_bin, meta)
 
-    baseline_ms = run_binary(baseline_bin, args.iterations)
-    im2col_ms = run_binary(im2col_bin, args.iterations)
-    return BenchmarkResult(name, baseline_ms, im2col_ms)
+    baseline_ms = run_binary(baseline_bin, args.iterations, baseline_dump)
+    im2col_ms = run_binary(im2col_bin, args.iterations, im2col_dump)
+
+    tensors_equal, reason = compare_output_tensors(meta, baseline_dump, im2col_dump)
+    if not tensors_equal:
+        raise ValueError(f"{name}: output mismatch between baseline and im2col; {reason}")
+    return BenchmarkResult(name, baseline_ms, im2col_ms, meta)
+
+
+def fmt_dims(dims: tuple[int, ...]) -> str:
+    if not dims:
+        return "-"
+    return "x".join(str(dim) for dim in dims)
 
 
 def print_table(results: list[BenchmarkResult]) -> None:
     rows = [
-        ("model", "baseline ms", "im2col ms", "speedup"),
-        ("-----", "-----------", "---------", "-------"),
+        (
+            "model",
+            "op",
+            "input",
+            "output",
+            "kernel",
+            "stride",
+            "dilation",
+            "pads",
+            "group",
+            "baseline ms",
+            "im2col ms",
+            "speedup",
+        ),
+        (
+            "-----",
+            "--",
+            "-----",
+            "------",
+            "------",
+            "------",
+            "--------",
+            "----",
+            "-----",
+            "-----------",
+            "---------",
+            "-------",
+        ),
     ]
     for result in results:
         rows.append(
             (
                 result.model,
+                result.meta.op_type,
+                fmt_dims(result.meta.input_shape),
+                fmt_dims(result.meta.output_shape),
+                fmt_dims(result.meta.kernel_shape),
+                fmt_dims(result.meta.strides),
+                fmt_dims(result.meta.dilations),
+                fmt_dims(result.meta.pads),
+                str(result.meta.group),
                 f"{result.baseline_ms:.6f}",
                 f"{result.im2col_ms:.6f}",
                 f"{result.speedup:.2f}x",
             )
         )
 
-    widths = [max(len(row[i]) for row in rows) for i in range(4)]
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
     for idx, row in enumerate(rows):
         print(
             f"{row[0]:<{widths[0]}}  "
-            f"{row[1]:>{widths[1]}}  "
+            f"{row[1]:<{widths[1]}}  "
             f"{row[2]:>{widths[2]}}  "
-            f"{row[3]:>{widths[3]}}"
+            f"{row[3]:>{widths[3]}}  "
+            f"{row[4]:>{widths[4]}}  "
+            f"{row[5]:>{widths[5]}}  "
+            f"{row[6]:>{widths[6]}}  "
+            f"{row[7]:>{widths[7]}}  "
+            f"{row[8]:>{widths[8]}}  "
+            f"{row[9]:>{widths[9]}}  "
+            f"{row[10]:>{widths[10]}}  "
+            f"{row[11]:>{widths[11]}}"
         )
         if idx == 1:
             continue

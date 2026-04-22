@@ -1,10 +1,8 @@
 /* This file is part of onnx2c.
  *
- * Im2Col optimization pass (DISABLED)
+ * Im2Col optimization pass
  * Transforms Conv operations into fused Im2Col node for better performance.
  * Handles: Conv, depthwise (group>1), and pointwise (1x1) convolutions.
- *
- * Currently disabled due to bugs in the code generation.
  */
 
 #include "graph.h"
@@ -23,15 +21,66 @@ static bool is_conv_like_node(Node* n)
 	       n->op_name == "QLinearConv";
 }
 
-static bool can_be_im2col(SpatialFilter* conv)
+static void replace_consumer(Tensor* tensor, Node* old_consumer, Node* new_consumer)
 {
-	if (conv->dilations.size() > 0) {
-		for (size_t i = 0; i < conv->dilations.size(); i++) {
-			if (conv->dilations[i] != 1)
-				return false;
+	for (auto& consumer : tensor->consumers) {
+		if (consumer == old_consumer) {
+			consumer = new_consumer;
+			return;
 		}
 	}
+	for (auto consumer : tensor->consumers) {
+		if (consumer == new_consumer)
+			return;
+	}
+	tensor->consumers.push_back(new_consumer);
+}
+
+static bool is_arithmetic_type(onnx::TensorProto_DataType t)
+{
+	return t == onnx::TensorProto_DataType_FLOAT ||
+	       t == onnx::TensorProto_DataType_DOUBLE ||
+	       t == onnx::TensorProto_DataType_FLOAT16 ||
+	       t == onnx::TensorProto_DataType_BFLOAT16 ||
+	       t == onnx::TensorProto_DataType_INT8 ||
+	       t == onnx::TensorProto_DataType_UINT8 ||
+	       t == onnx::TensorProto_DataType_INT16 ||
+	       t == onnx::TensorProto_DataType_UINT16 ||
+	       t == onnx::TensorProto_DataType_INT32 ||
+	       t == onnx::TensorProto_DataType_UINT32 ||
+	       t == onnx::TensorProto_DataType_INT64 ||
+	       t == onnx::TensorProto_DataType_UINT64;
+}
+
+static bool can_be_im2col(SpatialFilter* conv, Tensor* X, Tensor* W, Tensor* Y)
+{
+	if (X->rank() != 4 || W->rank() != 4 || Y->rank() != 4)
+		return false;
+
+	if (!is_arithmetic_type(X->data_type) ||
+	    !is_arithmetic_type(W->data_type) ||
+	    !is_arithmetic_type(Y->data_type))
+		return false;
+
+	if (conv->group <= 0)
+		return false;
+
+	if (X->data_dim[1] % conv->group != 0 || W->data_dim[0] % conv->group != 0)
+		return false;
+
+	if (W->data_dim[1] != X->data_dim[1] / conv->group)
+		return false;
+
 	return true;
+}
+
+static Im2Col::ArithmeticMode arithmetic_mode_for(Node* n)
+{
+	if (n->op_name == "ConvInteger")
+		return Im2Col::ConvInteger;
+	if (n->op_name == "QLinearConv")
+		return Im2Col::QLinearConv;
+	return Im2Col::Conv;
 }
 
 void Graph::im2col(void)
@@ -58,15 +107,12 @@ void Graph::im2col(void)
 			continue;
 		}
 
-		if (!can_be_im2col(conv)) {
-			LOG(WARNING) << "  Skipping: unsupported dilations" << std::endl;
-			continue;
-		}
-
-		Tensor* X = conv->get_input_tensor(0);
+		Tensor* X = const_cast<Tensor*>(conv->get_X());
+		Tensor* W = const_cast<Tensor*>(conv->get_W());
+		Tensor* Y = conv->get_output_tensor(0);
 		LOG(TRACE) << "  Input tensor: " << X->name << " rank=" << X->rank() << std::endl;
-		if (X->rank() != 4) {
-			LOG(WARNING) << "  Skipping: only 2D convolutions supported" << std::endl;
+		if (!can_be_im2col(conv, X, W, Y)) {
+			LOG(WARNING) << "  Skipping: unsupported Conv for im2col" << std::endl;
 			continue;
 		}
 
@@ -76,13 +122,14 @@ void Graph::im2col(void)
 	for (auto n : candidates) {
 		SpatialFilter* conv = dynamic_cast<SpatialFilter*>(n);
 
-		Tensor* X = conv->get_input_tensor(0);
-		Tensor* W = conv->get_input_tensor(1);
+		Tensor* X = const_cast<Tensor*>(conv->get_X());
+		Tensor* W = const_cast<Tensor*>(conv->get_W());
 		Tensor* Y = conv->get_output_tensor(0);
 
 		Im2Col* im2col = new Im2Col;
 		im2col->onnx_name = conv->onnx_name + "_im2col";
 		im2col->isResolved = true;
+		im2col->arithmetic_mode = arithmetic_mode_for(n);
 
 		im2col->batch = X->data_dim[0];
 		im2col->in_ch = X->data_dim[1];
@@ -104,48 +151,70 @@ void Graph::im2col(void)
 		}
 		if (conv->pads.size() >= 4) {
 			im2col->pad_h = conv->pads[0];
-			im2col->pad_w = conv->pads[2];
+			im2col->pad_w = conv->pads[1];
 		}
 		if (conv->dilations.size() >= 2) {
 			im2col->dilation_h = conv->dilations[0];
 			im2col->dilation_w = conv->dilations[1];
 		}
 
-		im2col->has_bias = (conv->get_number_of_inputs() >= 3);
-
-		Tensor* output = new Tensor;
-		output->name = im2col->onnx_name + "_output";
-		output->data_type = Y->data_type;
-		output->data_dim = Y->data_dim;
-		output->isConst = false;
-		output->initialize = false;
-		output->generate = true;
-
-		nodes.push_back(im2col);
-		tensors.push_back(output);
-
-		im2col->register_input(X, "x");
-		im2col->register_input(W, "w");
-		if (im2col->has_bias) {
-			Tensor* B = conv->get_input_tensor(2);
-			im2col->register_input(B, "b");
+		if (im2col->arithmetic_mode == Im2Col::Conv) {
+			im2col->has_bias = (conv->get_number_of_inputs() >= 3);
+			im2col->register_input(X, "x");
+			im2col->register_input(W, "w");
+			if (im2col->has_bias) {
+				Tensor* B = conv->get_input_tensor(2);
+				im2col->register_input(B, "bias");
+				replace_consumer(B, n, im2col);
+			}
 		}
-		im2col->register_output(output, "y");
-
-		X->consumers.push_back(im2col);
-		W->consumers.push_back(im2col);
-
-		for (auto consumer : Y->consumers) {
-			consumer->replace_input(Y, output);
+		else if (im2col->arithmetic_mode == Im2Col::ConvInteger) {
+			im2col->has_x_zero_point = (conv->get_number_of_inputs() >= 3);
+			im2col->has_w_zero_point = (conv->get_number_of_inputs() >= 4);
+			im2col->register_input(X, "x");
+			im2col->register_input(W, "w");
+			if (im2col->has_x_zero_point) {
+				Tensor* X_zero_point = conv->get_input_tensor(2);
+				im2col->register_input(X_zero_point, "x_zero_point");
+				replace_consumer(X_zero_point, n, im2col);
+			}
+			if (im2col->has_w_zero_point) {
+				Tensor* W_zero_point = conv->get_input_tensor(3);
+				im2col->register_input(W_zero_point, "w_zero_point");
+				replace_consumer(W_zero_point, n, im2col);
+			}
 		}
+		else {
+			im2col->has_bias = (conv->get_number_of_inputs() >= 9);
+			im2col->register_input(X, "x");
+			im2col->register_input(conv->get_input_tensor(1), "x_scale");
+			im2col->register_input(conv->get_input_tensor(2), "x_zero_point");
+			im2col->register_input(W, "w");
+			im2col->register_input(conv->get_input_tensor(4), "w_scale");
+			im2col->register_input(conv->get_input_tensor(5), "w_zero_point");
+			im2col->register_input(conv->get_input_tensor(6), "y_scale");
+			im2col->register_input(conv->get_input_tensor(7), "y_zero_point");
+			for (unsigned i = 1; i <= 7; i++)
+				replace_consumer(conv->get_input_tensor(i), n, im2col);
+			if (im2col->has_bias) {
+				Tensor* B = conv->get_input_tensor(8);
+				im2col->register_input(B, "bias");
+				replace_consumer(B, n, im2col);
+			}
+		}
+		im2col->register_output(Y, "y");
+
+		replace_consumer(X, n, im2col);
+		replace_consumer(W, n, im2col);
 
 		auto it = std::find(nodes.begin(), nodes.end(), n);
 		if (it != nodes.end()) {
-			nodes.erase(it);
+			*it = im2col;
 		}
+		std::string transformed_node_name = n->onnx_name;
 		delete n;
 
-		LOG(TRACE) << "Transform complete for " << n->onnx_name << std::endl;
+		LOG(TRACE) << "Transform complete for " << transformed_node_name << std::endl;
 	}
 
 	int nodes_after = nodes.size();
