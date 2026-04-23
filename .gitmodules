@@ -13,3 +13,6 @@
 [submodule "benchmark"]
 	path = benchmark
 	url = https://github.com/google/benchmark.git
+[submodule "energyrunner"]
+	path = energyrunner
+	url = https://github.com/eembc/energyrunner.git
