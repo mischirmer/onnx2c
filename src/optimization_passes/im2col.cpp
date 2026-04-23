@@ -8,6 +8,7 @@
 #include "graph.h"
 #include "nodes/spatialfilter.h"
 #include "nodes/im2col.h"
+#include "options.h"
 
 #include <cstdint>
 #include <algorithm>
@@ -74,6 +75,67 @@ static bool can_be_im2col(SpatialFilter* conv, Tensor* X, Tensor* W, Tensor* Y)
 	return true;
 }
 
+static bool has_non_unit_dilation(SpatialFilter* conv)
+{
+	for (auto dilation : conv->dilations) {
+		if (dilation != 1)
+			return true;
+	}
+	return false;
+}
+
+static bool should_use_im2col_heuristic(SpatialFilter* conv, Tensor* X, Tensor* W, Tensor* Y)
+{
+	int64_t batch = X->data_dim[0];
+	int64_t in_ch = X->data_dim[1];
+	int64_t in_h = X->data_dim[2];
+	int64_t in_w = X->data_dim[3];
+	int64_t out_ch = Y->data_dim[1];
+	int64_t out_h = Y->data_dim[2];
+	int64_t out_w = Y->data_dim[3];
+	int64_t kernel_h = W->data_dim[2];
+	int64_t kernel_w = W->data_dim[3];
+	int64_t group = conv->group;
+	int64_t in_ch_per_group = in_ch / group;
+
+	int64_t ifm_area = in_h * in_w;
+	int64_t output_cells = batch * out_h * out_w * out_ch;
+	int64_t kernel_area = kernel_h * kernel_w;
+	int64_t lowered_elems = batch * out_h * out_w * in_ch_per_group * kernel_area;
+
+	// The Arm Compute Library CPU heuristic routes non-unit dilation to
+	// Im2Col+GEMM, and 1x1 kernels to GEMM. onnx2c only selects between
+	// direct loops and the fused im2col loops, but these are still strong
+	// indicators that the im2col-style loop order is useful.
+	if (has_non_unit_dilation(conv))
+		return true;
+
+	if (kernel_h == 1 && kernel_w == 1)
+		return true;
+
+	// Avoid forcing the transformation on very large lowered matrices by
+	// default. In a classical im2col implementation this corresponds to a
+	// large temporary workspace; for onnx2c's fused implementation it is still
+	// a useful proxy for cases where direct convolution may be preferable.
+	const int64_t large_lowered_matrix_elems = 2 * 1024 * 1024;
+	if (lowered_elems > large_lowered_matrix_elems)
+		return false;
+
+	// Small feature maps are generally good candidates for GEMM-style loop
+	// orders because the overhead is low and the reuse is dense.
+	if (ifm_area <= 64)
+		return true;
+
+	// Depthwise/grouped convolutions have a small per-output reduction and tend
+	// to benefit from avoiding the generic direct grouped loop structure.
+	if (group > 1)
+		return true;
+
+	// For regular kernels, require a modest amount of arithmetic work before
+	// choosing im2col by default.
+	return kernel_area > 1 && output_cells * in_ch_per_group * kernel_area >= 4096;
+}
+
 static Im2Col::ArithmeticMode arithmetic_mode_for(Node* n)
 {
 	if (n->op_name == "ConvInteger")
@@ -113,6 +175,12 @@ void Graph::im2col(void)
 		LOG(TRACE) << "  Input tensor: " << X->name << " rank=" << X->rank() << std::endl;
 		if (!can_be_im2col(conv, X, W, Y)) {
 			LOG(WARNING) << "  Skipping: unsupported Conv for im2col" << std::endl;
+			continue;
+		}
+
+		if (options.opt_im2col_mode == im2col_mode::HEURISTIC &&
+		    !should_use_im2col_heuristic(conv, X, W, Y)) {
+			LOG(DEBUG) << "  Skipping: im2col heuristic selected baseline Conv" << std::endl;
 			continue;
 		}
 

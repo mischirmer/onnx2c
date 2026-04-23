@@ -15,6 +15,11 @@ from pathlib import Path
 
 import numpy as np
 import onnx
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -150,6 +155,25 @@ class BenchmarkResult:
         return self.baseline_ms / self.im2col_ms
 
 
+@dataclass(frozen=True)
+class Im2ColPhaseBreakdown:
+    input_reshape_ratio: float
+    core_gemm_ratio: float
+    output_reshape_ratio: float
+
+    @property
+    def input_reshape_pct(self) -> float:
+        return self.input_reshape_ratio * 100.0
+
+    @property
+    def core_gemm_pct(self) -> float:
+        return self.core_gemm_ratio * 100.0
+
+    @property
+    def output_reshape_pct(self) -> float:
+        return self.output_reshape_ratio * 100.0
+
+
 def run(cmd: list[str], *, stdout_path: Path | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     stdout = subprocess.PIPE
     handle = None
@@ -243,10 +267,12 @@ def write_wrapper(out_dir: Path) -> Path:
     return wrapper
 
 
-def generate_c(onnx2c: Path, model: Path, output: Path, *, im2col: bool) -> None:
+def generate_c(onnx2c: Path, model: Path, output: Path, *, im2col_mode: str | None) -> None:
     cmd = [str(onnx2c), "-l", "0"]
-    if im2col:
+    if im2col_mode == "heuristic":
         cmd.extend(["-p", "im2col"])
+    elif im2col_mode == "all":
+        cmd.extend(["-p", "im2col_all"])
     cmd.append(str(model))
     run(cmd, stdout_path=output)
 
@@ -356,8 +382,8 @@ def benchmark_model(args: argparse.Namespace, model: Path, wrapper: Path) -> Ben
     baseline_dump = args.out_dir / f"{name}_baseline.out.bin"
     im2col_dump = args.out_dir / f"{name}_im2col.out.bin"
 
-    generate_c(args.onnx2c, model, baseline_c, im2col=False)
-    generate_c(args.onnx2c, model, im2col_c, im2col=True)
+    generate_c(args.onnx2c, model, baseline_c, im2col_mode=None)
+    generate_c(args.onnx2c, model, im2col_c, im2col_mode=args.im2col_mode)
     compile_binary(args.gcc, baseline_c, wrapper, baseline_bin, meta)
     compile_binary(args.gcc, im2col_c, wrapper, im2col_bin, meta)
 
@@ -376,6 +402,64 @@ def fmt_dims(dims: tuple[int, ...]) -> str:
     return "x".join(str(dim) for dim in dims)
 
 
+def estimate_im2col_phase_breakdown(meta: ModelMeta) -> Im2ColPhaseBreakdown:
+    # This benchmark's im2col kernel is generated as fused loops rather than
+    # explicit temporary matrices. We still report a three-stage view by
+    # attributing work to: (1) input reshape/indexing, (2) MAC core, (3) output writeback.
+    if len(meta.input_shape) != 4 or len(meta.output_shape) != 4 or len(meta.kernel_shape) != 2:
+        return Im2ColPhaseBreakdown(0.0, 1.0, 0.0)
+
+    batch, in_ch, _, _ = meta.input_shape
+    _, out_ch, out_h, out_w = meta.output_shape
+    kernel_h, kernel_w = meta.kernel_shape
+
+    group = max(meta.group, 1)
+    in_ch_per_group = in_ch // group
+    kernel_elems_per_output = in_ch_per_group * kernel_h * kernel_w
+    output_positions = batch * out_h * out_w
+    output_elems = output_positions * out_ch
+
+    # Work model for explicit im2col + GEMM style decomposition:
+    # - input reshape: gather + index math + bounds handling
+    # - core gemm: dot-product MACs
+    # - output reshape: quantization/finalize + writeback
+    macs = output_elems * kernel_elems_per_output
+    reshape_points = output_positions * kernel_elems_per_output
+
+    has_padding = any(p != 0 for p in meta.pads)
+    has_dilation = any(d != 1 for d in meta.dilations)
+    has_stride = any(s != 1 for s in meta.strides)
+
+    reshape_unit_cost = 1.0
+    if has_padding:
+        reshape_unit_cost += 0.4
+    if has_dilation:
+        reshape_unit_cost += 0.3
+    if has_stride:
+        reshape_unit_cost += 0.2
+
+    if meta.op_type == "QLinearConv":
+        gemm_unit_cost = 1.0
+        out_unit_cost = 4.0
+    else:
+        gemm_unit_cost = 1.0
+        out_unit_cost = 1.0
+
+    reshape_work = reshape_points * reshape_unit_cost
+    gemm_work = macs * gemm_unit_cost
+    out_work = output_elems * out_unit_cost
+    total = reshape_work + gemm_work + out_work
+
+    if total <= 0:
+        return Im2ColPhaseBreakdown(0.0, 1.0, 0.0)
+
+    return Im2ColPhaseBreakdown(
+        input_reshape_ratio=reshape_work / total,
+        core_gemm_ratio=gemm_work / total,
+        output_reshape_ratio=out_work / total,
+    )
+
+
 def print_table(results: list[BenchmarkResult]) -> None:
     rows = [
         (
@@ -391,6 +475,9 @@ def print_table(results: list[BenchmarkResult]) -> None:
             "baseline ms",
             "im2col ms",
             "speedup",
+            "im2col in%",
+            "im2col gemm%",
+            "im2col out%",
         ),
         (
             "-----",
@@ -405,9 +492,13 @@ def print_table(results: list[BenchmarkResult]) -> None:
             "-----------",
             "---------",
             "-------",
+            "----------",
+            "------------",
+            "----------",
         ),
     ]
     for result in results:
+        phase = estimate_im2col_phase_breakdown(result.meta)
         rows.append(
             (
                 result.model,
@@ -422,6 +513,9 @@ def print_table(results: list[BenchmarkResult]) -> None:
                 f"{result.baseline_ms:.6f}",
                 f"{result.im2col_ms:.6f}",
                 f"{result.speedup:.2f}x",
+                f"{phase.input_reshape_pct:.1f}%",
+                f"{phase.core_gemm_pct:.1f}%",
+                f"{phase.output_reshape_pct:.1f}%",
             )
         )
 
@@ -439,7 +533,10 @@ def print_table(results: list[BenchmarkResult]) -> None:
             f"{row[8]:>{widths[8]}}  "
             f"{row[9]:>{widths[9]}}  "
             f"{row[10]:>{widths[10]}}  "
-            f"{row[11]:>{widths[11]}}"
+            f"{row[11]:>{widths[11]}}  "
+            f"{row[12]:>{widths[12]}}  "
+            f"{row[13]:>{widths[13]}}  "
+            f"{row[14]:>{widths[14]}}"
         )
         if idx == 1:
             continue
@@ -452,6 +549,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--onnx2c", type=Path, default=None)
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--gcc", default=os.environ.get("CC", "gcc"))
+    parser.add_argument("--im2col-mode", choices=["heuristic", "all"], default="heuristic")
     parser.add_argument("--model", action="append", default=[], help="Run only models whose filename stem contains this string.")
     return parser.parse_args()
 
@@ -473,7 +571,10 @@ def main() -> None:
         raise SystemExit("no benchmark models selected")
 
     wrapper = write_wrapper(args.out_dir)
-    results = [benchmark_model(args, model, wrapper) for model in models]
+    results = [
+        benchmark_model(args, model, wrapper)
+        for model in tqdm(models, desc="Benchmarking models", unit="model")
+    ]
     print_table(results)
 
 
