@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <random>
@@ -264,6 +265,13 @@ static std::vector<std::string> parse_string_list(const std::string& csv)
 	return out;
 }
 
+static std::string fmt4(double v)
+{
+	std::ostringstream oss;
+	oss << std::fixed << std::setprecision(4) << v;
+	return oss.str();
+}
+
 static uint32_t fault_model_from_name(const std::string& name)
 {
 	if (name == "single_point") return 0;
@@ -298,9 +306,9 @@ int main(int argc, char** argv)
 	bool fault_param_seen = false;
 
 	bool sweep = false;
-	std::size_t sweep_indexes = 10;
+	std::size_t sweep_indexes = 25;
 	std::string sweep_patterns_csv = "single_point,trivial,checkered";
-	std::string sweep_values_csv = "0, 5, 10, 1e3";
+	std::string sweep_values_csv = "0, 5, 10, 100, 1e3";
 	bool sweep_progress = true;
 	uint32_t sweep_seed = 12345;
 	bool sweep_debug = false;
@@ -420,7 +428,7 @@ int main(int argc, char** argv)
 			const double acc0 = st0.samples ? (double)st0.correct / (double)st0.samples : 0.0;
 			const double acc0_corr =
 			    st0.samples ? (double)st0.correct_corrected / (double)st0.samples : 0.0;
-			std::cout << "baseline_accuracy=" << acc0 << " baseline_accuracy_corrected=" << acc0_corr
+			std::cout << "baseline_accuracy=" << fmt4(acc0) << " baseline_accuracy_corrected=" << fmt4(acc0_corr)
 			          << "\n";
 		}
 
@@ -495,11 +503,11 @@ int main(int argc, char** argv)
 
 					std::cout << "layer=" << layer_id << " op=" << layer_op << " pattern=" << pat
 					          << " value=" << val
-					          << " idx_trials=" << sweep_indexes << " acc_min=" << acc_min
-					          << " acc_max=" << acc_max << " acc_mean=" << acc_mean
-					          << " acc_corr_min=" << acc_corr_min
-					          << " acc_corr_max=" << acc_corr_max
-					          << " acc_corr_mean=" << acc_corr_mean
+					          << " idx_trials=" << sweep_indexes << " acc_min=" << fmt4(acc_min)
+					          << " acc_max=" << fmt4(acc_max) << " acc_mean=" << fmt4(acc_mean)
+					          << " acc_corr_min=" << fmt4(acc_corr_min)
+					          << " acc_corr_max=" << fmt4(acc_corr_max)
+					          << " acc_corr_mean=" << fmt4(acc_corr_mean)
 					          << " det_min=" << det_min << " det_max=" << det_max
 					          << " det_mean=" << det_mean
 					          << " inj_min=" << inj_min << " inj_max=" << inj_max
@@ -539,7 +547,7 @@ int main(int argc, char** argv)
 	}
 
 	const double acc = static_cast<double>(correct) / static_cast<double>(samples.size());
-	std::cout << "samples=" << samples.size() << " correct=" << correct << " accuracy=" << acc
+	std::cout << "samples=" << samples.size() << " correct=" << correct << " accuracy=" << fmt4(acc)
 	          << "\n";
 	// Note: "corrected" accuracy is only meaningful when ABFT is enabled in codegen.
 	// We compute it by replacing detected samples with baseline (fault-free) predictions.
@@ -548,7 +556,7 @@ int main(int argc, char** argv)
 		const auto st = run_dataset(samples, input_scale, input_zero_point);
 		const double acc_corr =
 		    st.samples ? (double)st.correct_corrected / (double)st.samples : 0.0;
-		std::cout << "accuracy_corrected=" << acc_corr << " detected_samples=" << st.detected_samples
+		std::cout << "accuracy_corrected=" << fmt4(acc_corr) << " detected_samples=" << st.detected_samples
 		          << "\n";
 	}
 	std::cout << "tampering_detected=" << (TAMPERING_DETECTED ? "true" : "false")

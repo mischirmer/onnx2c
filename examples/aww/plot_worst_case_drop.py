@@ -178,7 +178,7 @@ def _plot_heatmap_pair(
     import matplotlib.pyplot as plt
 
     fig_w = max(10, 0.48 * len(xlabels))
-    fig_h_single = max(3.5, 0.42 * len(ylabels) + 1.8)
+    fig_h_single = max(2.8, 0.28 * len(ylabels) + 1.2)
     fig, (ax0, ax1) = plt.subplots(
         nrows=2, ncols=1, figsize=(fig_w, fig_h_single * 2 + 0.8), constrained_layout=True
     )
@@ -198,6 +198,61 @@ def _plot_heatmap_pair(
 
     cbar = fig.colorbar(im, ax=[ax0, ax1], fraction=0.02, pad=0.02)
     cbar.set_label("Worst-case accuracy drop")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=160)
+    plt.close(fig)
+
+def _plot_stacked_single_heatmaps(
+    out_path: Path,
+    title: str,
+    value_blocks: List[Tuple[float, object, List[str]]],
+    ylabels: List[str],
+) -> None:
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    if not value_blocks:
+        return
+
+    nrows = len(value_blocks)
+    fig_w = max(10, max(0.44 * len(xlabels) for _, _, xlabels in value_blocks))
+    fig_h = max(3.2, nrows * max(2.0, 0.22 * len(ylabels) + 0.9))
+
+    fig, axes = plt.subplots(
+        nrows=nrows,
+        ncols=1,
+        figsize=(fig_w, fig_h),
+        constrained_layout=True,
+        squeeze=True,
+    )
+
+    if nrows == 1:
+        axes = [axes]
+
+    vmax_candidates = []
+    for _, matrix_combined, _ in value_blocks:
+        if np.isfinite(matrix_combined).any():
+            vmax_candidates.append(float(np.nanmax(matrix_combined)))
+    vmax = max(vmax_candidates) if vmax_candidates else 1.0
+    if vmax <= 0:
+        vmax = 1.0
+
+    fig.suptitle(title, fontsize=12)
+    im = None
+    for r, (value, matrix_combined, xlabels) in enumerate(value_blocks):
+        im = _draw_heatmap(
+            axes[r],
+            matrix_combined,
+            xlabels,
+            ylabels,
+            f"value={value:g}",
+            vmax,
+        )
+
+    if im is not None:
+        cbar = fig.colorbar(im, ax=axes, fraction=0.02, pad=0.02)
+        cbar.set_label("Worst-case accuracy drop")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=160)
@@ -269,54 +324,62 @@ def main() -> int:
             for r in parsed[(mech, quant)].rows:
                 scenarios[(r.pattern, r.value)] = True
 
-        for pattern, value in sorted(scenarios.keys(), key=lambda x: (x[0], x[1])):
-            layer_union: List[int] = []
-            for mech in mechs:
-                pl = parsed[(mech, quant)]
-                layer_set = {r.layer for r in pl.rows if r.pattern == pattern and r.value == value}
-                for lid in pl.layer_order:
-                    if lid in layer_set and lid not in layer_union:
-                        layer_union.append(lid)
-
-            if not layer_union:
-                continue
-
-            import numpy as np
-
-            mat_overall = np.full((len(mechs), len(layer_union)), np.nan, dtype=float)
-            mat_undetected = np.full((len(mechs), len(layer_union)), np.nan, dtype=float)
-
-            for yi, mech in enumerate(mechs):
-                pl = parsed[(mech, quant)]
-                table_overall = _build_worst_drop_table(pl, undetected_only=False)
-                table_undetected = _build_worst_drop_table(pl, undetected_only=True)
-                for xi, layer in enumerate(layer_union):
-                    v_overall = table_overall.get((pattern, value, layer))
-                    v_undetected = table_undetected.get((pattern, value, layer))
-                    if v_overall is not None:
-                        mat_overall[yi, xi] = v_overall
-                    if v_undetected is not None:
-                        mat_undetected[yi, xi] = v_undetected
-                    if v_undetected is not None:
-                        rows_csv.append(
-                            {
-                                "quant": quant,
-                                "mechanism": mech,
-                                "fault_model": pattern,
-                                "fault_value": _value_key(value),
-                                "layer": str(layer),
-                                "op": pl.layer_op.get(layer, "?"),
-                                "worst_drop": f"{v_undetected:.8f}",
-                            }
-                        )
-
-            xlabels = [f"L{l}:{parsed[(mechs[0], quant)].layer_op.get(l, '?')}" for l in layer_union]
-            title = f"Worst-case drop | {quant.upper()} | pattern={pattern} value={value:g}"
-            out_png = args.out_dir / quant / f"heatmap_{pattern}_v{_value_key(value).replace('.', 'p')}.png"
-            _plot_heatmap_pair(out_png, title, mat_overall, mat_undetected, xlabels, mechs)
+        import numpy as np
 
         for pattern in sorted({p for (p, _) in scenarios.keys()}):
             values = sorted({v for (p, v) in scenarios.keys() if p == pattern})
+            value_blocks: List[Tuple[float, object, List[str]]] = []
+
+            for value in values:
+                layer_union: List[int] = []
+                for mech in mechs:
+                    pl = parsed[(mech, quant)]
+                    layer_set = {r.layer for r in pl.rows if r.pattern == pattern and r.value == value}
+                    for lid in pl.layer_order:
+                        if lid in layer_set and lid not in layer_union:
+                            layer_union.append(lid)
+
+                if not layer_union:
+                    continue
+
+                mat_overall = np.full((len(mechs), len(layer_union)), np.nan, dtype=float)
+                mat_undetected = np.full((len(mechs), len(layer_union)), np.nan, dtype=float)
+
+                for yi, mech in enumerate(mechs):
+                    pl = parsed[(mech, quant)]
+                    table_overall = _build_worst_drop_table(pl, undetected_only=False)
+                    table_undetected = _build_worst_drop_table(pl, undetected_only=True)
+                    for xi, layer in enumerate(layer_union):
+                        v_overall = table_overall.get((pattern, value, layer))
+                        v_undetected = table_undetected.get((pattern, value, layer))
+                        if v_overall is not None:
+                            mat_overall[yi, xi] = v_overall
+                        if v_undetected is not None:
+                            mat_undetected[yi, xi] = v_undetected
+                        if v_undetected is not None:
+                            rows_csv.append(
+                                {
+                                    "quant": quant,
+                                    "mechanism": mech,
+                                    "fault_model": pattern,
+                                    "fault_value": _value_key(value),
+                                    "layer": str(layer),
+                                    "op": pl.layer_op.get(layer, "?"),
+                                    "worst_drop": f"{v_undetected:.8f}",
+                                }
+                            )
+
+                xlabels = [f"L{l}:{parsed[(mechs[0], quant)].layer_op.get(l, '?')}" for l in layer_union]
+                # Single matrix: top row = "none" (overall), below = undetected per protection mechanism.
+                none_row = np.nanmax(mat_overall, axis=0, keepdims=True)
+                mat_combined = np.vstack([none_row, mat_undetected])
+                value_blocks.append((value, mat_combined, xlabels))
+
+            if value_blocks:
+                title = f"Worst-case drop | {quant.upper()} | pattern={pattern}"
+                out_png = args.out_dir / quant / f"heatmap_stacked_{pattern}.png"
+                _plot_stacked_single_heatmaps(out_png, title, value_blocks, ["none"] + mechs)
+
             score_by: Dict[Tuple[str, float], float] = {}
             for mech in mechs:
                 table = _build_worst_drop_table(parsed[(mech, quant)], undetected_only=undetected_only)

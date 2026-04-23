@@ -1,1 +1,3 @@
 build/
+examples/aww/logs/
+examples/aww/plots_*/
