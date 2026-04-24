@@ -149,6 +149,7 @@ class BenchmarkResult:
     baseline_ms: float
     im2col_ms: float
     meta: ModelMeta
+    im2col_applied: bool
 
     @property
     def speedup(self) -> float:
@@ -256,8 +257,8 @@ def model_meta(model_path: Path) -> ModelMeta:
 
 
 def ensure_models() -> None:
-    if any(SCRIPT_DIR.glob("*.onnx")):
-        return
+    # Always regenerate the synthetic benchmark suite so the ONNX files stay
+    # aligned with generate_models.py as cases are added or adjusted.
     run([sys.executable, str(SCRIPT_DIR / "generate_models.py")])
 
 
@@ -275,6 +276,10 @@ def generate_c(onnx2c: Path, model: Path, output: Path, *, im2col_mode: str | No
         cmd.extend(["-p", "im2col_all"])
     cmd.append(str(model))
     run(cmd, stdout_path=output)
+
+
+def generated_c_uses_im2col(source: Path) -> bool:
+    return "Fused Im2Col + MatMul" in source.read_text()
 
 
 def compile_binary(gcc: str, source: Path, wrapper: Path, binary: Path, meta: ModelMeta) -> None:
@@ -384,6 +389,7 @@ def benchmark_model(args: argparse.Namespace, model: Path, wrapper: Path) -> Ben
 
     generate_c(args.onnx2c, model, baseline_c, im2col_mode=None)
     generate_c(args.onnx2c, model, im2col_c, im2col_mode=args.im2col_mode)
+    im2col_applied = generated_c_uses_im2col(im2col_c)
     compile_binary(args.gcc, baseline_c, wrapper, baseline_bin, meta)
     compile_binary(args.gcc, im2col_c, wrapper, im2col_bin, meta)
 
@@ -393,7 +399,7 @@ def benchmark_model(args: argparse.Namespace, model: Path, wrapper: Path) -> Ben
     tensors_equal, reason = compare_output_tensors(meta, baseline_dump, im2col_dump)
     if not tensors_equal:
         raise ValueError(f"{name}: output mismatch between baseline and im2col; {reason}")
-    return BenchmarkResult(name, baseline_ms, im2col_ms, meta)
+    return BenchmarkResult(name, baseline_ms, im2col_ms, meta, im2col_applied)
 
 
 def fmt_dims(dims: tuple[int, ...]) -> str:
@@ -475,6 +481,7 @@ def print_table(results: list[BenchmarkResult]) -> None:
             "baseline ms",
             "im2col ms",
             "speedup",
+            "applied",
             "im2col in%",
             "im2col gemm%",
             "im2col out%",
@@ -491,6 +498,7 @@ def print_table(results: list[BenchmarkResult]) -> None:
             "-----",
             "-----------",
             "---------",
+            "-------",
             "-------",
             "----------",
             "------------",
@@ -513,6 +521,7 @@ def print_table(results: list[BenchmarkResult]) -> None:
                 f"{result.baseline_ms:.6f}",
                 f"{result.im2col_ms:.6f}",
                 f"{result.speedup:.2f}x",
+                "yes" if result.im2col_applied else "no",
                 f"{phase.input_reshape_pct:.1f}%",
                 f"{phase.core_gemm_pct:.1f}%",
                 f"{phase.output_reshape_pct:.1f}%",
@@ -536,7 +545,8 @@ def print_table(results: list[BenchmarkResult]) -> None:
             f"{row[11]:>{widths[11]}}  "
             f"{row[12]:>{widths[12]}}  "
             f"{row[13]:>{widths[13]}}  "
-            f"{row[14]:>{widths[14]}}"
+            f"{row[14]:>{widths[14]}}  "
+            f"{row[15]:>{widths[15]}}"
         )
         if idx == 1:
             continue
