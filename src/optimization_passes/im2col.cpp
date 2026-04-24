@@ -93,15 +93,6 @@ static bool has_non_unit_stride(SpatialFilter* conv)
 	return false;
 }
 
-static bool has_padding(SpatialFilter* conv)
-{
-	for (auto pad : conv->pads) {
-		if (pad != 0)
-			return true;
-	}
-	return false;
-}
-
 static bool convinteger_has_zero_points(SpatialFilter* conv)
 {
 	return conv->op_name == "ConvInteger" && conv->get_number_of_inputs() >= 4;
@@ -132,7 +123,6 @@ static bool should_use_im2col_heuristic(SpatialFilter* conv, Tensor* X, Tensor* 
 	bool pointwise = kernel_h == 1 && kernel_w == 1;
 	bool dilated = has_non_unit_dilation(conv);
 	bool strided = has_non_unit_stride(conv);
-	bool padded = has_padding(conv);
 
 	// The Arm Compute Library CPU heuristic routes non-unit dilation to
 	// Im2Col+GEMM. onnx2c only selects between direct loops and the fused
@@ -159,7 +149,10 @@ static bool should_use_im2col_heuristic(SpatialFilter* conv, Tensor* X, Tensor* 
 		if (grouped)
 			return false;
 
-		if (!strided && output_positions > 4096)
+		// The 64x64 stride-1 benchmark is already in the regime where the
+		// quantized finalize path can dominate, so only keep the smaller
+		// stride-1 cases on the im2col path.
+		if (!strided && output_positions >= 4096)
 			return false;
 
 		return macs >= 256 * 1024;
@@ -172,21 +165,29 @@ static bool should_use_im2col_heuristic(SpatialFilter* conv, Tensor* X, Tensor* 
 		if (convinteger_has_zero_points(conv) && strided)
 			return false;
 
-		// Keep the heuristic conservative for tiny kernels with little total
-		// work, but allow larger or padded integer filters where index handling
-		// dominates the direct loop nest.
-		if (macs < 32 * 1024 && !padded)
+		// Integer pointwise kernels did not show a stable win in the benchmark
+		// sweep, so keep them on the direct path by default.
+		if (pointwise)
 			return false;
+
+		// For stride-1 integer convs, the medium-sized 64x64 3x3 case regressed
+		// while the small 32x32 case benefited and larger cases were near
+		// parity. Keep only the clearly good small stride-1 region.
+		if (!strided) {
+			if (kernel_area > 9)
+				return output_positions >= 1024;
+
+			return output_positions <= 1024;
+		}
 
 		return true;
 	}
 
 	if (pointwise) {
 		// For floating-point 1x1 convolutions there is no padding/bounds work to
-		// eliminate. The 128x128 benchmark was still slightly slower with
-		// im2col, so keep this path conservative and require a very large
-		// output plane before paying for the im2col-style loop order.
-		return output_positions >= 32768 && output_cells >= 1048576;
+		// eliminate, and the larger pointwise cases in the benchmark sweep did
+		// not show a stable win. Keep them on the direct path by default.
+		return false;
 	}
 
 	// Small feature maps are generally good candidates for GEMM-style loop

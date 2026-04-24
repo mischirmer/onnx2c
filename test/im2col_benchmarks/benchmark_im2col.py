@@ -150,10 +150,18 @@ class BenchmarkResult:
     im2col_ms: float
     meta: ModelMeta
     im2col_applied: bool
+    forced_im2col_ms: float | None = None
+    forced_im2col_applied: bool = False
 
     @property
     def speedup(self) -> float:
         return self.baseline_ms / self.im2col_ms
+
+    @property
+    def forced_speedup(self) -> float | None:
+        if self.forced_im2col_ms is None:
+            return None
+        return self.baseline_ms / self.forced_im2col_ms
 
 
 @dataclass(frozen=True)
@@ -382,10 +390,13 @@ def benchmark_model(args: argparse.Namespace, model: Path, wrapper: Path) -> Ben
 
     baseline_c = args.out_dir / f"{name}_baseline.c"
     im2col_c = args.out_dir / f"{name}_im2col.c"
+    forced_c = args.out_dir / f"{name}_im2col_all.c"
     baseline_bin = args.out_dir / f"{name}_baseline"
     im2col_bin = args.out_dir / f"{name}_im2col"
+    forced_bin = args.out_dir / f"{name}_im2col_all"
     baseline_dump = args.out_dir / f"{name}_baseline.out.bin"
     im2col_dump = args.out_dir / f"{name}_im2col.out.bin"
+    forced_dump = args.out_dir / f"{name}_im2col_all.out.bin"
 
     generate_c(args.onnx2c, model, baseline_c, im2col_mode=None)
     generate_c(args.onnx2c, model, im2col_c, im2col_mode=args.im2col_mode)
@@ -399,7 +410,28 @@ def benchmark_model(args: argparse.Namespace, model: Path, wrapper: Path) -> Ben
     tensors_equal, reason = compare_output_tensors(meta, baseline_dump, im2col_dump)
     if not tensors_equal:
         raise ValueError(f"{name}: output mismatch between baseline and im2col; {reason}")
-    return BenchmarkResult(name, baseline_ms, im2col_ms, meta, im2col_applied)
+
+    forced_im2col_ms = None
+    forced_im2col_applied = False
+    if args.im2col_mode == "heuristic" and not im2col_applied:
+        generate_c(args.onnx2c, model, forced_c, im2col_mode="all")
+        forced_im2col_applied = generated_c_uses_im2col(forced_c)
+        compile_binary(args.gcc, forced_c, wrapper, forced_bin, meta)
+        forced_im2col_ms = run_binary(forced_bin, args.iterations, forced_dump)
+
+        tensors_equal, reason = compare_output_tensors(meta, baseline_dump, forced_dump)
+        if not tensors_equal:
+            raise ValueError(f"{name}: output mismatch between baseline and im2col_all; {reason}")
+
+    return BenchmarkResult(
+        name,
+        baseline_ms,
+        im2col_ms,
+        meta,
+        im2col_applied,
+        forced_im2col_ms,
+        forced_im2col_applied,
+    )
 
 
 def fmt_dims(dims: tuple[int, ...]) -> str:
@@ -467,6 +499,12 @@ def estimate_im2col_phase_breakdown(meta: ModelMeta) -> Im2ColPhaseBreakdown:
 
 
 def print_table(results: list[BenchmarkResult]) -> None:
+    def fmt_optional_ms(value: float | None) -> str:
+        return "-" if value is None else f"{value:.6f}"
+
+    def fmt_optional_speedup(value: float | None) -> str:
+        return "-" if value is None else f"{value:.2f}x"
+
     rows = [
         (
             "model",
@@ -479,9 +517,12 @@ def print_table(results: list[BenchmarkResult]) -> None:
             "pads",
             "group",
             "baseline ms",
-            "im2col ms",
-            "speedup",
-            "applied",
+            "heur ms",
+            "heur spd",
+            "heur applied",
+            "all ms",
+            "all spd",
+            "all applied",
             "im2col in%",
             "im2col gemm%",
             "im2col out%",
@@ -497,9 +538,12 @@ def print_table(results: list[BenchmarkResult]) -> None:
             "----",
             "-----",
             "-----------",
-            "---------",
             "-------",
+            "--------",
+            "------------",
+            "------",
             "-------",
+            "-----------",
             "----------",
             "------------",
             "----------",
@@ -522,6 +566,9 @@ def print_table(results: list[BenchmarkResult]) -> None:
                 f"{result.im2col_ms:.6f}",
                 f"{result.speedup:.2f}x",
                 "yes" if result.im2col_applied else "no",
+                fmt_optional_ms(result.forced_im2col_ms),
+                fmt_optional_speedup(result.forced_speedup),
+                "yes" if result.forced_im2col_applied else "-",
                 f"{phase.input_reshape_pct:.1f}%",
                 f"{phase.core_gemm_pct:.1f}%",
                 f"{phase.output_reshape_pct:.1f}%",
@@ -546,7 +593,10 @@ def print_table(results: list[BenchmarkResult]) -> None:
             f"{row[12]:>{widths[12]}}  "
             f"{row[13]:>{widths[13]}}  "
             f"{row[14]:>{widths[14]}}  "
-            f"{row[15]:>{widths[15]}}"
+            f"{row[15]:>{widths[15]}}  "
+            f"{row[16]:>{widths[16]}}  "
+            f"{row[17]:>{widths[17]}}  "
+            f"{row[18]:>{widths[18]}}"
         )
         if idx == 1:
             continue
