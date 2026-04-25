@@ -2,12 +2,12 @@
 set -euo pipefail
 
 LOG_DIR="logs"
-MAX_PARALLEL="${MAX_PARALLEL:-3}"
+MAX_PARALLEL="${MAX_PARALLEL:-4}"
 RUN_PARALLEL="${RUN_PARALLEL:-1}"
 mkdir -p "${LOG_DIR}"
 
-BIN_DIR="../../../energyrunner/datasets/kws01"
-LABEL_CSV="../../../energyrunner/datasets/kws01-open/mfcc/y_labels.csv"
+BIN_DIR="../../energyrunner/datasets/kws01"
+LABEL_CSV="../../energyrunner/datasets/kws01-open/mfcc/y_labels.csv"
 LIMIT=1000
 
 jobs=(

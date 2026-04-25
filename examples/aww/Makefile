@@ -1,6 +1,6 @@
 CPP ?= g++
 CC ?= gcc
-PY ?= ../../../venv/bin/python3
+PY ?= python3
 
 CFLAGS ?= -O2 -std=c99
 CXXFLAGS ?= -O2 -std=c++17
