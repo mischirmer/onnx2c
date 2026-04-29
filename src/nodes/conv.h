@@ -91,6 +91,7 @@ class Conv : public SpatialFilter {
 				else
 					INDT_2 << "static const float b_rs_cache[" << tiles_per_group << "][" << K << "] = {" << std::endl;
 				float* wd = (float*)W->data_buffer;
+				const uint64_t weight_elems = static_cast<uint64_t>(W->data_num_elem());
 				uint32_t wd1 = W->data_dim.size() >= 2 ? W->data_dim[1] : 1;
 				const uint32_t groups_for_cache = group > 1 ? group : 1;
 				for (uint32_t gg = 0; gg < groups_for_cache; gg++) {
@@ -103,8 +104,8 @@ class Conv : public SpatialFilter {
 						for (uint32_t m = m0; m < m1 && m < (uint32_t)maps; m++) {
 							uint32_t kk = 0;
 							for (uint32_t c = 0; c < gi; c++) for (int ki = 0; ki < k0; ki++) {
-								if (n_data_dims == 1) { uint32_t i = m * gi * k0 + c * k0 + ki; if (i < W->data_num_elem()) s[kk++] += wd[i]; }
-								else for (int kj = 0; kj < k1; kj++) { uint64_t i = ((uint64_t)m * wd1 * k0 + c * k0 + ki) * k1 + kj; if (i < W->data_num_elem()) s[kk++] += (double)wd[i]; }
+								if (n_data_dims == 1) { uint64_t i = (uint64_t)m * gi * k0 + (uint64_t)c * k0 + (uint64_t)ki; if (i < weight_elems) s[kk++] += wd[i]; }
+								else for (int kj = 0; kj < k1; kj++) { uint64_t i = ((uint64_t)m * wd1 * k0 + c * k0 + ki) * k1 + kj; if (i < weight_elems) s[kk++] += (double)wd[i]; }
 							}
 						}
 						INDT_3 << "{";
