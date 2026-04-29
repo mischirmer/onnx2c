@@ -78,9 +78,8 @@ void print_optimization_passes(void)
 	std::cout << "Available optimization passes:" << std::endl;
 	std::cout << " - 'unionize' (defaut:on)" << std::endl;
 	std::cout << " - 'fold_casts' (defaut:on)" << std::endl;
-	std::cout << " - 'im2col' (default:off, heuristic mode)" << std::endl;
-	std::cout << " - 'im2col_heuristic' (default im2col mode)" << std::endl;
-	std::cout << " - 'im2col_all' (force im2col for every supported Conv-like node)" << std::endl;
+	std::cout << " - 'im2col' or 'im2col_heuristic' (transform Conv to im2col+matmul, heuristic-based)" << std::endl;
+	std::cout << " - 'im2col_all' (transform ALL Conv nodes to im2col+matmul)" << std::endl;
 	std::cout << " - 'none' (disable all optimization passes)" << std::endl;
 }
 
@@ -92,8 +91,6 @@ void store_optimization_passes(const std::string& opt)
 	// then enable those that were requested
 	options.opt_unionize = false;
 	options.opt_fold_casts = false;
-	options.opt_im2col = false;
-	options.opt_im2col_mode = im2col_mode::HEURISTIC;
 	if (opt == "none") {
 		LOG(TRACE) << "Disabling all optimizations: " << opt << std::endl;
 		return;
@@ -139,6 +136,25 @@ void parse_cmdline_options(int argc, const char* argv[])
 	args::Flag noGlobals(parser, "no-globals", "Do not generate global tensors", {'n', "no-globals"});
 	args::Flag externInit(parser, "extern-init", "Declare initialized tensors as extern globals", {'e', "extern-init"});
 	args::Flag onlyInit(parser, "only-init", "Only generate initialized tensors (for use with --extern-init)", {'i', "only-init"});
+	args::Flag convIm2col(parser, "conv-im2col", "Emit Conv as im2col + dot-product (matmul-style)", {"conv-im2col"});
+	args::Flag abftGemm(parser, "abft-gemm", "Add ABFT checks for gemm-like dot-products in Conv", {"abft-gemm"});
+	args::Flag abyzftGemm(parser, "abyzft-gemm", "AByzFT: randomized scaling + ABFT checks for gemm-like dot-products", {"abyzft-gemm"});
+	args::Flag freivaldsGemm(parser, "freivalds-gemm", "Freivalds check (random {0,1} vector) for gemm-like dot-products", {"freivalds-gemm"});
+	args::ValueFlag<uint32_t> freivaldsChecks(parser, "N", "Number of independent Freivalds checks (default: 1)", {"freivalds-checks"});
+	args::Flag gvfaGemm(parser, "gvfa-gemm", "GVFA check (Gaussian random vector) for gemm-like dot-products", {"gvfa-gemm"});
+	args::ValueFlag<uint32_t> gvfaChecks(parser, "N", "Number of independent GVFA checks (default: 1)", {"gvfa-checks"});
+	args::ValueFlag<uint32_t> abftMtile(parser, "N", "ABFT/Freivalds/AByzFT output-channel tile size (default: 16)", {"abft-mtile"});
+	args::ValueFlag<float> abftEps(parser, "eps", "ABFT relative tolerance (default: 1e-3)", {"abft-eps"});
+	args::Flag abftWeightChecksumsCompiletime(
+	    parser,
+	    "abft-weight-checksums-compiletime",
+	    "Precompute ABFT weight checksum vectors at codegen time",
+	    {"abft-weight-checksums-compiletime"});
+	args::Flag abftWeightChecksumsRuntime(
+	    parser,
+	    "abft-weight-checksums-runtime",
+	    "Compute ABFT weight checksum vectors at runtime (default)",
+	    {"abft-weight-checksums-runtime"});
 	args::ValueFlagList<std::string> define(parser, "dim:size", "Define graph input dimension. Can be given multiple times", {'d', "define"});
 	args::ValueFlag<int> loglevel(parser, "level", "Logging verbosity. 0(none)-4(all)", {'l', "log"});
 	args::ValueFlag<std::string> optimizations(parser, "opt[,opt]...", "Specify optimization passes to run. ('help' to list available)", {'p', "optimizations"});
@@ -188,6 +204,41 @@ void parse_cmdline_options(int argc, const char* argv[])
 	}
 	if (onlyInit) {
 		options.only_init = true;
+	}
+	if (convIm2col) {
+		options.conv_im2col = true;
+	}
+	if (abftGemm) {
+		options.abft_gemm = true;
+	}
+	if (abyzftGemm) {
+		options.abyzft_gemm = true;
+	}
+	if (freivaldsGemm) {
+		options.freivalds_gemm = true;
+	}
+	if (freivaldsChecks) {
+		options.freivalds_checks = args::get(freivaldsChecks);
+		if (options.freivalds_checks == 0) options.freivalds_checks = 1;
+	}
+	if (gvfaGemm) {
+		options.gvfa_gemm = true;
+	}
+	if (gvfaChecks) {
+		options.gvfa_checks = args::get(gvfaChecks);
+		if (options.gvfa_checks == 0) options.gvfa_checks = 1;
+	}
+	if (abftMtile) {
+		options.abft_mtile = args::get(abftMtile);
+	}
+	if (abftEps) {
+		options.abft_eps = args::get(abftEps);
+	}
+	if (abftWeightChecksumsCompiletime) {
+		options.abft_weight_checksums_compiletime = true;
+	}
+	if (abftWeightChecksumsRuntime) {
+		options.abft_weight_checksums_compiletime = false;
 	}
 	if (define) {
 		for (const auto& d : args::get(define)) {

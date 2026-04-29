@@ -22,6 +22,145 @@ void Graph::print_source(std::ostream& dst, const std::string& interface_func_na
 	dst << std::endl;
 	print_includes(dst);
 	dst << std::endl;
+	// ABFT status globals (updated by generated ABFT checks when enabled).
+	dst << "volatile bool TAMPERING_DETECTED = false;" << std::endl;
+	dst << "uint32_t TAMPERING_DETECTIONS = 0;" << std::endl;
+	// Fault injection controls (used by generated kernels when enabled).
+	dst << "volatile bool FAULT_ENABLED = false;" << std::endl;
+	dst << "uint32_t FAULT_MODEL = 0; /* 0=single_point, 1=trivial, 2=checkered */" << std::endl;
+	dst << "uint32_t FAULT_LAYER_ID = 0;" << std::endl;
+	dst << "uint32_t FAULT_INDEX = 0;" << std::endl;
+	dst << "float FAULT_VALUE = 0.0f;" << std::endl;
+	dst << "uint32_t FAULT_N = 12; /* used by some fault models */" << std::endl;
+	dst << "uint32_t FAULT_STRIDE = 2; /* used by some fault models */" << std::endl;
+	dst << "volatile bool FAULT_INJECTED = false;" << std::endl;
+	dst << "uint32_t FAULT_INJECTIONS = 0;" << std::endl;
+	dst << std::endl;
+
+	// Deterministic PRNG helpers (used by AByzFT / Freivalds / GVFA).
+	// Only emit the helpers that are actually needed by the enabled mechanism(s),
+	// to keep generated code minimal and avoid confusion in analyses.
+	if (options.abyzft_gemm || options.freivalds_gemm || options.gvfa_gemm) {
+		dst << "static inline uint32_t ABYZFT_xorshift32(uint32_t* s) {" << std::endl;
+		dst << "\tuint32_t x = *s;" << std::endl;
+		dst << "\tx ^= x << 13;" << std::endl;
+		dst << "\tx ^= x >> 17;" << std::endl;
+		dst << "\tx ^= x << 5;" << std::endl;
+		dst << "\t*s = x;" << std::endl;
+		dst << "\treturn x;" << std::endl;
+		dst << "}" << std::endl;
+		if (options.abyzft_gemm || options.gvfa_gemm) {
+			dst << "static inline float ABYZFT_rand01(uint32_t* s) {" << std::endl;
+			dst << "\t// [0,1) using 24 bits" << std::endl;
+			dst << "\treturn (float)(ABYZFT_xorshift32(s) & 0x00FFFFFFu) / 16777216.0f;" << std::endl;
+			dst << "}" << std::endl;
+		}
+		if (options.abyzft_gemm) {
+			dst << "#ifndef ABYZFT_U8_SCALE_COUNT" << std::endl;
+			dst << "#define ABYZFT_U8_SCALE_COUNT 6u" << std::endl;
+			dst << "#endif" << std::endl;
+			dst << "#ifndef ABYZFT_U8_SCALES" << std::endl;
+			dst << "#define ABYZFT_U8_SCALES {2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f}" << std::endl;
+			dst << "#endif" << std::endl;
+			dst << "#ifndef ABYZFT_S8_SCALE_COUNT" << std::endl;
+			dst << "#define ABYZFT_S8_SCALE_COUNT 12u" << std::endl;
+			dst << "#endif" << std::endl;
+			dst << "#ifndef ABYZFT_S8_SCALES" << std::endl;
+			dst << "#define ABYZFT_S8_SCALES {-64.0f, -32.0f, -16.0f, -8.0f, -4.0f, -2.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f}" << std::endl;
+			dst << "#endif" << std::endl;
+			dst << "static inline float ABYZFT_pick_scale_u8(uint32_t* s) {" << std::endl;
+			dst << "\tstatic const float k[] = ABYZFT_U8_SCALES;" << std::endl;
+			dst << "\treturn k[ABYZFT_xorshift32(s) % ABYZFT_U8_SCALE_COUNT];" << std::endl;
+			dst << "}" << std::endl;
+			dst << "static inline float ABYZFT_pick_scale_s8(uint32_t* s) {" << std::endl;
+			dst << "\tstatic const float k[] = ABYZFT_S8_SCALES;" << std::endl;
+			dst << "\treturn k[ABYZFT_xorshift32(s) % ABYZFT_S8_SCALE_COUNT];" << std::endl;
+			dst << "}" << std::endl;
+			dst << "static inline uint32_t ABYZFT_pow2_shift_u64(uint64_t v) {" << std::endl;
+			dst << "\treturn v ? (uint32_t)__builtin_ctzll((unsigned long long)v) : 0u;" << std::endl;
+			dst << "}" << std::endl;
+			dst << "static inline int64_t ABYZFT_descale_pow2_i64(int64_t v, uint32_t shift) {" << std::endl;
+			dst << "\tif( shift == 0u ) return v;" << std::endl;
+			dst << "\tconst int64_t bias = (v < 0) ? (((int64_t)1 << shift) - 1) : 0;" << std::endl;
+			dst << "\treturn (v + bias) >> shift;" << std::endl;
+			dst << "}" << std::endl;
+			dst << "static inline int32_t ABYZFT_descale_pow2_i32(int32_t v, uint32_t shift) {" << std::endl;
+			dst << "\tif( shift == 0u ) return v;" << std::endl;
+			dst << "\tconst int32_t bias = (v < 0) ? (((int32_t)1 << shift) - 1) : 0;" << std::endl;
+			dst << "\treturn (v + bias) >> shift;" << std::endl;
+			dst << "}" << std::endl;
+		}
+		if (options.freivalds_gemm) {
+			dst << "static inline uint32_t ABYZFT_randbit(uint32_t* s) {" << std::endl;
+			dst << "\treturn ABYZFT_xorshift32(s) & 1u;" << std::endl;
+			dst << "}" << std::endl;
+		}
+		if (options.gvfa_gemm) {
+			dst << "static inline float ABYZFT_randn(uint32_t* s) {" << std::endl;
+			dst << "\t// Box-Muller transform for N(0,1)" << std::endl;
+			dst << "\tfloat u1 = ABYZFT_rand01(s);" << std::endl;
+			dst << "\tfloat u2 = ABYZFT_rand01(s);" << std::endl;
+			dst << "\tif( u1 < 1.0e-7f ) u1 = 1.0e-7f;" << std::endl;
+			dst << "\treturn sqrtf(-2.0f * logf(u1)) * cosf(6.28318530718f * u2);" << std::endl;
+			dst << "}" << std::endl;
+		}
+		dst << std::endl;
+	}
+
+	// Minimal metadata for fault-injection sweeps (selected compute-heavy layers).
+	// The runtime can iterate these to run per-layer sweeps without parsing C/ONNX.
+	{
+		std::vector<const Node*> sweep_nodes;
+		for (auto* n : nodes) {
+			if (!n) continue;
+			n->sweep_layer_id = 0;
+			// Sweep only compute-heavy layers where faults are meaningful:
+			// - Conv / depthwise conv: Conv, QLinearConv, ConvInteger
+			// - Dense: Gemm, QGemm, MatMul, QLinearMatMul
+			if (n->op_name == "Conv" ||
+			    n->op_name == "QLinearConv" ||
+			    n->op_name == "ConvInteger" ||
+			    n->op_name == "Gemm" ||
+			    n->op_name == "QGemm" ||
+			    n->op_name == "MatMul" ||
+			    n->op_name == "QLinearMatMul") {
+				n->sweep_layer_id = (uint32_t)(sweep_nodes.size() + 1u);
+				sweep_nodes.push_back(n);
+			}
+		}
+		dst << "const uint32_t SWEEP_LAYER_COUNT = " << sweep_nodes.size() << "u;" << std::endl;
+		dst << "const uint32_t SWEEP_LAYER_IDS[" << sweep_nodes.size() << "] = {";
+		for (size_t i = 0; i < sweep_nodes.size(); i++) {
+			if (i) dst << ", ";
+			dst << (uint32_t)(i + 1) << "u";
+		}
+		dst << "};" << std::endl;
+		dst << "const char* SWEEP_LAYER_OPS[" << sweep_nodes.size() << "] = {";
+		for (size_t i = 0; i < sweep_nodes.size(); i++) {
+			if (i) dst << ", ";
+			dst << "\"" << sweep_nodes[i]->op_name << "\"";
+		}
+		dst << "};" << std::endl;
+		dst << "const uint64_t SWEEP_LAYER_OUT_ELEMS[" << sweep_nodes.size() << "] = {";
+		for (size_t i = 0; i < sweep_nodes.size(); i++) {
+			if (i) dst << ", ";
+			uint64_t elems = 1;
+			const Tensor* out0 = sweep_nodes[i]->get_output_tensor(0);
+			if (!out0) {
+				elems = 0;
+			}
+			else {
+				for (int d : out0->data_dim) {
+					if (d <= 0) { elems = 0; break; }
+					elems *= (uint64_t)d;
+				}
+			}
+			dst << elems << "ull";
+		}
+		dst << "};" << std::endl;
+	}
+	dst << std::endl;
+
 	print_global_tensors(dst);
 	dst << std::endl;
 	print_functions(dst);

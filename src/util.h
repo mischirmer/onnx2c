@@ -35,6 +35,7 @@ std::string cast_to_ndim_arrayptr(const toC::Tensor* t, const std::string shortn
 #define INDT_3 dst << "\t\t\t"
 #define INDT_4 dst << "\t\t\t\t"
 #define INDT_5 dst << "\t\t\t\t\t"
+#define INDT_6 dst << "\t\t\t\t\t\t"
 #define INDT(X)                                       \
 	{                                             \
 		for (unsigned _i = 0; _i < (X); _i++) \

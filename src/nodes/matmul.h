@@ -17,6 +17,7 @@ class MatMul : public AbstractMatMul {
 	}
 
 	virtual void resolve(void) override;
+	void print(std::ostream& dst) const override;
 	void print_multiply_accumulate(std::ostream& dst,
 	                               const std::string& y_idx,
 	                               const std::string& a_idx,

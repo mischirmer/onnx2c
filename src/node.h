@@ -21,6 +21,7 @@ class Node {
 	bool isResolved;       // has this node been visited in current compilation step.
 	std::string onnx_name; //	ONNX name of the individual node
 	std::string op_name;   //	ONNX name of node type
+	uint32_t sweep_layer_id = 0; // 1-based id used by the runtime sweep metadata; 0 means "not sweepable"
 	static int64_t onnx_ir_version;
 	virtual ~Node() {}
 
