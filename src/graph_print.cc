@@ -57,10 +57,10 @@ void Graph::print_source(std::ostream& dst, const std::string& interface_func_na
 		}
 		if (options.abyzft_gemm) {
 			dst << "#ifndef ABYZFT_U8_SCALE_COUNT" << std::endl;
-			dst << "#define ABYZFT_U8_SCALE_COUNT 6u" << std::endl;
+			dst << "#define ABYZFT_U8_SCALE_COUNT 12u" << std::endl;
 			dst << "#endif" << std::endl;
 			dst << "#ifndef ABYZFT_U8_SCALES" << std::endl;
-			dst << "#define ABYZFT_U8_SCALES {2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f}" << std::endl;
+			dst << "#define ABYZFT_U8_SCALES {-64.0f, -32.0f, -16.0f, -8.0f, -4.0f, -2.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f}" << std::endl;
 			dst << "#endif" << std::endl;
 			dst << "#ifndef ABYZFT_S8_SCALE_COUNT" << std::endl;
 			dst << "#define ABYZFT_S8_SCALE_COUNT 12u" << std::endl;
@@ -115,11 +115,12 @@ void Graph::print_source(std::ostream& dst, const std::string& interface_func_na
 			if (!n) continue;
 			n->sweep_layer_id = 0;
 			// Sweep only compute-heavy layers where faults are meaningful:
-			// - Conv / depthwise conv: Conv, QLinearConv, ConvInteger
+			// - Conv / depthwise conv: Conv, QLinearConv, ConvInteger, Im2Col-lowered Conv
 			// - Dense: Gemm, QGemm, MatMul, QLinearMatMul
 			if (n->op_name == "Conv" ||
 			    n->op_name == "QLinearConv" ||
 			    n->op_name == "ConvInteger" ||
+			    n->op_name == "Im2Col" ||
 			    n->op_name == "Gemm" ||
 			    n->op_name == "QGemm" ||
 			    n->op_name == "MatMul" ||

@@ -80,6 +80,7 @@ void print_optimization_passes(void)
 	std::cout << " - 'fold_casts' (defaut:on)" << std::endl;
 	std::cout << " - 'im2col' or 'im2col_heuristic' (transform Conv to im2col+matmul, heuristic-based)" << std::endl;
 	std::cout << " - 'im2col_all' (transform ALL Conv nodes to im2col+matmul)" << std::endl;
+	std::cout << " - 'wide_precision' (promote constant int8/uint8 quantized weights to int16/uint16)" << std::endl;
 	std::cout << " - 'none' (disable all optimization passes)" << std::endl;
 }
 
@@ -91,6 +92,7 @@ void store_optimization_passes(const std::string& opt)
 	// then enable those that were requested
 	options.opt_unionize = false;
 	options.opt_fold_casts = false;
+	options.opt_wide_precision = false;
 	if (opt == "none") {
 		LOG(TRACE) << "Disabling all optimizations: " << opt << std::endl;
 		return;
@@ -122,6 +124,10 @@ void store_optimization_passes(const std::string& opt)
 			options.opt_im2col = true;
 			options.opt_im2col_mode = im2col_mode::ALL;
 		}
+		else if (item == "wide_precision") {
+			LOG(DEBUG) << "Enabling 'wide_precision' optimization pass" << std::endl;
+			options.opt_wide_precision = true;
+		}
 		else {
 			LOG(WARNING) << "Optimization pass " << item << " does not exist" << std::endl;
 		}
@@ -136,9 +142,10 @@ void parse_cmdline_options(int argc, const char* argv[])
 	args::Flag noGlobals(parser, "no-globals", "Do not generate global tensors", {'n', "no-globals"});
 	args::Flag externInit(parser, "extern-init", "Declare initialized tensors as extern globals", {'e', "extern-init"});
 	args::Flag onlyInit(parser, "only-init", "Only generate initialized tensors (for use with --extern-init)", {'i', "only-init"});
-	args::Flag convIm2col(parser, "conv-im2col", "Emit Conv as im2col + dot-product (matmul-style)", {"conv-im2col"});
-	args::Flag abftGemm(parser, "abft-gemm", "Add ABFT checks for gemm-like dot-products in Conv", {"abft-gemm"});
+	args::Flag convIm2col(parser, "conv-im2col", "Compatibility alias for -p im2col_all", {"conv-im2col"});
+	args::Flag abftGemm(parser, "abft-gemm", "Add ABFT checks for MatMul/im2col-lowered dot-products", {"abft-gemm"});
 	args::Flag abyzftGemm(parser, "abyzft-gemm", "AByzFT: randomized scaling + ABFT checks for gemm-like dot-products", {"abyzft-gemm"});
+	args::Flag abyzftWideAccumulator(parser, "abyzft-wide-accumulator", "AByzFT: use int64 wide accumulator for scaled dot-products (default: int32 path)", {"abyzft-wide-accumulator"});
 	args::Flag freivaldsGemm(parser, "freivalds-gemm", "Freivalds check (random {0,1} vector) for gemm-like dot-products", {"freivalds-gemm"});
 	args::ValueFlag<uint32_t> freivaldsChecks(parser, "N", "Number of independent Freivalds checks (default: 1)", {"freivalds-checks"});
 	args::Flag gvfaGemm(parser, "gvfa-gemm", "GVFA check (Gaussian random vector) for gemm-like dot-products", {"gvfa-gemm"});
@@ -206,13 +213,17 @@ void parse_cmdline_options(int argc, const char* argv[])
 		options.only_init = true;
 	}
 	if (convIm2col) {
-		options.conv_im2col = true;
+		options.opt_im2col = true;
+		options.opt_im2col_mode = im2col_mode::ALL;
 	}
 	if (abftGemm) {
 		options.abft_gemm = true;
 	}
 	if (abyzftGemm) {
 		options.abyzft_gemm = true;
+	}
+	if (abyzftWideAccumulator) {
+		options.abyzft_wide_accumulator = true;
 	}
 	if (freivaldsGemm) {
 		options.freivalds_gemm = true;
@@ -258,7 +269,6 @@ void parse_cmdline_options(int argc, const char* argv[])
 		std::cerr << "No input file given";
 		hint_at_help_and_exit();
 	}
-
 	options.command_line_args.reserve(argc);
 	for (int i = 0; i < argc; i++)
 		options.command_line_args.emplace_back(argv[i]);

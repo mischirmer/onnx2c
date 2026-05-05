@@ -24,11 +24,13 @@ struct onnx2c_opts {
 	bool opt_fold_casts = true;
 	bool opt_im2col = false;
 	im2col_mode opt_im2col_mode = im2col_mode::HEURISTIC;
+	bool opt_wide_precision = false;
 
 	// ABFT options (from abft branch)
-	bool conv_im2col = false; // Emit Conv as im2col + dot-product (matmul-style)
+	bool conv_im2col = false; // Deprecated compatibility flag; use opt_im2col instead.
 	bool abft_gemm = false;   // Add ABFT checks around gemm-like dot-products
 	bool abyzft_gemm = false; // AByzFT: randomized scaling around gemm-like dot-products
+	bool abyzft_wide_accumulator = false; // AByzFT: use int64 wide accumulator (default: int32 path)
 	bool freivalds_gemm = false; // Freivalds check (random {0,1} vector) around gemm-like dot-products
 	uint32_t freivalds_checks = 1; // Number of independent Freivalds checks (default: 1)
 	bool gvfa_gemm = false; // GVFA: Freivalds variant with Gaussian random vectors

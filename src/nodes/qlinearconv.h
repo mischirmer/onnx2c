@@ -217,7 +217,7 @@ class QLinearConv : public SpatialFilter {
 			}
 			if (gvfa_enabled) {
 				INDT_4 << "uint32_t rand_state = (uint32_t)(0x9E3779B9u ^ LAYER_ID ^ (uint32_t)b ^ (uint32_t)m0_pre ^ (uint32_t)(chk*0x85EBCA6Bu));" << std::endl;
-				INDT_4 << "for( uint32_t mi=0; mi<(m1_pre-m0_pre); mi++ ) randomized_r_cache[chk][t][mi] = ABYZFT_randn(&rand_state);" << std::endl;
+				INDT_4 << "for( uint32_t mi=0; mi<(m1_pre-m0_pre); mi++ ) randomized_r_cache[chk][t][mi] = ABYZFT_rand01(&rand_state);" << std::endl;
 			}
 			INDT_4 << "for( uint32_t kk2=0; kk2<K; kk2++ ) randomized_brs_cache[chk][t][kk2] = 0.0;" << std::endl;
 			INDT_4 << "for( uint32_t m=m0_pre; m<m1_pre; m++ ) {" << std::endl;
@@ -584,11 +584,7 @@ class QLinearConv : public SpatialFilter {
 	void print(std::ostream& dst) const override
 	{
 		print_header_info_comment(dst);
-		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || options.freivalds_gemm || options.gvfa_gemm;
-		if (options.conv_im2col || checksum_enabled)
-			print_im2col_matmul(dst);
-		else
-			print_loop_with_padding_checks(dst);
+		print_loop_with_padding_checks(dst);
 	}
 
 	void resolve() override

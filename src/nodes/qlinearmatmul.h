@@ -295,7 +295,7 @@ class QLinearMatMul : public AbstractMatMul {
 					INDT_3 << "if( !r_any && " << N << "u>0u ) r_mask[0] = 1u;" << std::endl;
 				}
 				else {
-					INDT_3 << "for( uint32_t cc=0; cc<" << N << "u; cc++ ) r_vec[cc] = ABYZFT_randn(&freivalds_state);" << std::endl;
+					INDT_3 << "for( uint32_t cc=0; cc<" << N << "u; cc++ ) r_vec[cc] = ABYZFT_rand01(&freivalds_state);" << std::endl;
 				}
 				INDT_3 << "double b_rs[" << K << "];" << std::endl;
 				INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) b_rs[i] = 0.0;" << std::endl;

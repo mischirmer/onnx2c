@@ -44,6 +44,9 @@ class Graph {
 	/* Optimization step: Transform Conv-like nodes to MatMul using im2col. */
 	void im2col(void);
 
+	/* Optimization step: Promote constant quantized weights to wider integer storage. */
+	void wide_precision(void);
+
 	/* Set print options */
 	void set_no_globals(bool ng) { no_globals = ng; }
 

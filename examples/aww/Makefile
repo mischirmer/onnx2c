@@ -7,7 +7,8 @@ CXXFLAGS ?= -O2 -std=c++17
 CPPFLAGS ?=
 
 ONNX2C ?= ../../build/onnx2c
-ONNX2C_FLAGS ?= --conv-im2col --log=1
+IM2COL_OPT ?= -p im2col_all
+ONNX2C_FLAGS ?= $(IM2COL_OPT) --log=1
 TFLITE_INT8 ?= ../../tiny/benchmark/training/keyword_spotting/trained_models/kws_ref_model.tflite
 BUILD_DIR ?= build
 
@@ -16,7 +17,7 @@ INT8_ONNX ?= tiny_kws_ref_int8_qop.onnx
 
 RUNNER_CPP ?= run_generated.cpp
 
-.PHONY: all baseline abft abyzft freivalds1x freivalds2x freivalds%x gvfa1x gvfa2x gvfa%x fp32 int8 run_fp32 run_int8 clean help \
+.PHONY: all baseline baseline_raw abft abyzft freivalds1x freivalds2x freivalds%x gvfa1x gvfa2x gvfa%x fp32 int8 gen_fp32 gen_int8 run_fp32 run_int8 clean help FORCE \
 	aww_fp32_baseline aww_int8_baseline aww_fp32_abft aww_int8_abft \
 	aww_fp32_abyzft aww_int8_abyzft aww_fp32_freivalds1x aww_int8_freivalds1x \
 	aww_fp32_freivalds2x aww_int8_freivalds2x aww_fp32_gvfa1x aww_int8_gvfa1x \
@@ -28,12 +29,12 @@ RUNNER_CPP ?= run_generated.cpp
 
 BASELINE_ONNX2C_FLAGS ?= $(ONNX2C_FLAGS)
 BASELINE_RAW_ONNX2C_FLAGS ?= --log=1
-ABFT_ONNX2C_FLAGS ?= --conv-im2col --abft-gemm
-ABYZFT_ONNX2C_FLAGS ?= --conv-im2col --abyzft-gemm
-FREIVALDS1X_ONNX2C_FLAGS ?= --conv-im2col --freivalds-gemm --freivalds-checks 1
-FREIVALDS2X_ONNX2C_FLAGS ?= --conv-im2col --freivalds-gemm --freivalds-checks 2
-GVFA1X_ONNX2C_FLAGS ?= --conv-im2col --gvfa-gemm --gvfa-checks 1
-GVFA2X_ONNX2C_FLAGS ?= --conv-im2col --gvfa-gemm --gvfa-checks 2
+ABFT_ONNX2C_FLAGS ?= $(IM2COL_OPT) --abft-gemm --log=1
+ABYZFT_ONNX2C_FLAGS ?= $(IM2COL_OPT) --abyzft-gemm --log=1
+FREIVALDS1X_ONNX2C_FLAGS ?= $(IM2COL_OPT) --freivalds-gemm --freivalds-checks 1 --log=1
+FREIVALDS2X_ONNX2C_FLAGS ?= $(IM2COL_OPT) --freivalds-gemm --freivalds-checks 2 --log=1
+GVFA1X_ONNX2C_FLAGS ?= $(IM2COL_OPT) --gvfa-gemm --gvfa-checks 1 --log=1
+GVFA2X_ONNX2C_FLAGS ?= $(IM2COL_OPT) --gvfa-gemm --gvfa-checks 2 --log=1
 
 BASELINE_FP32_C ?= $(BUILD_DIR)/aww_fp32_baseline.c
 BASELINE_INT8_C ?= $(BUILD_DIR)/aww_i8_baseline.c
@@ -126,7 +127,7 @@ freivalds%x:
 	  0) echo "error: Freivalds checks must be >= 1"; exit 1 ;; \
 	esac
 	$(MAKE) \
-	  FREIVALDS1X_ONNX2C_FLAGS="--conv-im2col --freivalds-gemm --freivalds-checks $*" \
+	  FREIVALDS1X_ONNX2C_FLAGS="$(IM2COL_OPT) --freivalds-gemm --freivalds-checks $* --log=1" \
 	  FREIVALDS1X_FP32_C="$(BUILD_DIR)/aww_fp32_freivalds$*x.c" \
 	  FREIVALDS1X_INT8_C="$(BUILD_DIR)/aww_i8_freivalds$*x.c" \
 	  FREIVALDS1X_FP32_O="$(BUILD_DIR)/aww_fp32_freivalds$*x.o" \
@@ -142,7 +143,7 @@ gvfa%x:
 	  0) echo "error: GVFA checks must be >= 1"; exit 1 ;; \
 	esac
 	$(MAKE) \
-	  GVFA1X_ONNX2C_FLAGS="--conv-im2col --gvfa-gemm --gvfa-checks $*" \
+	  GVFA1X_ONNX2C_FLAGS="$(IM2COL_OPT) --gvfa-gemm --gvfa-checks $* --log=1" \
 	  GVFA1X_FP32_C="$(BUILD_DIR)/aww_fp32_gvfa$*x.c" \
 	  GVFA1X_INT8_C="$(BUILD_DIR)/aww_i8_gvfa$*x.c" \
 	  GVFA1X_FP32_O="$(BUILD_DIR)/aww_fp32_gvfa$*x.o" \
@@ -154,7 +155,7 @@ gvfa%x:
 
 help:
 	@echo "Targets:"
-	@echo "  make all        # build baseline, abft, abyzft, freivalds1x, and freivalds2x binaries"
+	@echo "  make all        # build baseline, abft, abyzft, freivalds1x/2x, and gvfa1x/2x binaries"
 	@echo "  make baseline   # build baseline fp32/int8 binaries"
 	@echo "  make abft       # build ABFT fp32/int8 binaries"
 	@echo "  make abyzft     # build AByzFT fp32/int8 binaries"
@@ -180,26 +181,28 @@ gen_int8: $(BASELINE_INT8_C)
 $(BUILD_DIR):
 	mkdir -p $@
 
-$(BASELINE_FLAGS_STAMP): | $(BUILD_DIR)
-	@echo "$(BASELINE_ONNX2C_FLAGS)" > $@
+FORCE:
 
-$(ABFT_FLAGS_STAMP): | $(BUILD_DIR)
-	@echo "$(ABFT_ONNX2C_FLAGS)" > $@
+$(BASELINE_FLAGS_STAMP): FORCE | $(BUILD_DIR)
+	@tmp="$@.tmp"; echo "$(BASELINE_ONNX2C_FLAGS)" > "$$tmp"; cmp -s "$$tmp" "$@" || mv "$$tmp" "$@"; rm -f "$$tmp"
 
-$(ABYZFT_FLAGS_STAMP): | $(BUILD_DIR)
-	@echo "$(ABYZFT_ONNX2C_FLAGS)" > $@
+$(ABFT_FLAGS_STAMP): FORCE | $(BUILD_DIR)
+	@tmp="$@.tmp"; echo "$(ABFT_ONNX2C_FLAGS)" > "$$tmp"; cmp -s "$$tmp" "$@" || mv "$$tmp" "$@"; rm -f "$$tmp"
 
-$(FREIVALDS1X_FLAGS_STAMP): | $(BUILD_DIR)
-	@echo "$(FREIVALDS1X_ONNX2C_FLAGS)" > $@
+$(ABYZFT_FLAGS_STAMP): FORCE | $(BUILD_DIR)
+	@tmp="$@.tmp"; echo "$(ABYZFT_ONNX2C_FLAGS)" > "$$tmp"; cmp -s "$$tmp" "$@" || mv "$$tmp" "$@"; rm -f "$$tmp"
 
-$(FREIVALDS2X_FLAGS_STAMP): | $(BUILD_DIR)
-	@echo "$(FREIVALDS2X_ONNX2C_FLAGS)" > $@
+$(FREIVALDS1X_FLAGS_STAMP): FORCE | $(BUILD_DIR)
+	@tmp="$@.tmp"; echo "$(FREIVALDS1X_ONNX2C_FLAGS)" > "$$tmp"; cmp -s "$$tmp" "$@" || mv "$$tmp" "$@"; rm -f "$$tmp"
 
-$(GVFA1X_FLAGS_STAMP): | $(BUILD_DIR)
-	@echo "$(GVFA1X_ONNX2C_FLAGS)" > $@
+$(FREIVALDS2X_FLAGS_STAMP): FORCE | $(BUILD_DIR)
+	@tmp="$@.tmp"; echo "$(FREIVALDS2X_ONNX2C_FLAGS)" > "$$tmp"; cmp -s "$$tmp" "$@" || mv "$$tmp" "$@"; rm -f "$$tmp"
 
-$(GVFA2X_FLAGS_STAMP): | $(BUILD_DIR)
-	@echo "$(GVFA2X_ONNX2C_FLAGS)" > $@
+$(GVFA1X_FLAGS_STAMP): FORCE | $(BUILD_DIR)
+	@tmp="$@.tmp"; echo "$(GVFA1X_ONNX2C_FLAGS)" > "$$tmp"; cmp -s "$$tmp" "$@" || mv "$$tmp" "$@"; rm -f "$$tmp"
+
+$(GVFA2X_FLAGS_STAMP): FORCE | $(BUILD_DIR)
+	@tmp="$@.tmp"; echo "$(GVFA2X_ONNX2C_FLAGS)" > "$$tmp"; cmp -s "$$tmp" "$@" || mv "$$tmp" "$@"; rm -f "$$tmp"
 
 $(BASELINE_FP32_C): $(FP32_ONNX) $(ONNX2C) $(BASELINE_FLAGS_STAMP)
 	$(ONNX2C) $(BASELINE_ONNX2C_FLAGS) $(FP32_ONNX) > $@
@@ -213,8 +216,8 @@ $(BASELINE_RAW_FP32_C): $(FP32_ONNX) $(ONNX2C) $(BASELINE_RAW_FLAGS_STAMP)
 $(BASELINE_RAW_INT8_C): $(INT8_ONNX) $(ONNX2C) $(BASELINE_RAW_FLAGS_STAMP)
 	$(ONNX2C) $(BASELINE_RAW_ONNX2C_FLAGS) $(INT8_ONNX) > $@
 
-$(BASELINE_RAW_FLAGS_STAMP): | $(BUILD_DIR)
-	@echo "$(BASELINE_RAW_ONNX2C_FLAGS)" > $@
+$(BASELINE_RAW_FLAGS_STAMP): FORCE | $(BUILD_DIR)
+	@tmp="$@.tmp"; echo "$(BASELINE_RAW_ONNX2C_FLAGS)" > "$$tmp"; cmp -s "$$tmp" "$@" || mv "$$tmp" "$@"; rm -f "$$tmp"
 
 $(ABFT_FP32_C): $(FP32_ONNX) $(ONNX2C) $(ABFT_FLAGS_STAMP)
 	$(ONNX2C) $(ABFT_ONNX2C_FLAGS) $(FP32_ONNX) > $@
@@ -407,4 +410,8 @@ clean:
 	  run_fp32_* run_int8_* \
 	  aww_fp32_* aww_int8_* \
 	  aww_fp32_*.c aww_i8_*.c aww_fp32_*.o aww_i8_*.o \
+	  $(BUILD_DIR)/aww_fp32_* $(BUILD_DIR)/aww_int8_* \
+	  $(BUILD_DIR)/aww_i8_*.c $(BUILD_DIR)/aww_fp32_*.c \
+	  $(BUILD_DIR)/aww_i8_*.o $(BUILD_DIR)/aww_fp32_*.o \
+	  $(BUILD_DIR)/.onnx2c_flags_*.stamp \
 	  .onnx2c_flags_baseline.stamp .onnx2c_flags_abft.stamp .onnx2c_flags_abyzft.stamp .onnx2c_flags_freivalds1x.stamp .onnx2c_flags_freivalds2x.stamp .onnx2c_flags_gvfa1x.stamp .onnx2c_flags_gvfa2x.stamp

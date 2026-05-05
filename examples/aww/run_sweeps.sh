@@ -11,10 +11,10 @@ mkdir -p "${LOG_DIR}"
 # local .bin payloads are stored under energyrunner/datasets/kws01.
 BIN_DIR="${BIN_DIR:-../../energyrunner/datasets/kws01}"
 LABEL_CSV="${LABEL_CSV:-../../tiny/benchmark/evaluation/datasets/kws01-open/mfcc/y_labels.csv}"
-LIMIT="${LIMIT:-150}"
+LIMIT="${LIMIT:-100}"
 
 if [[ "${AUTO_BUILD}" == "1" ]]; then
-  make all
+  make all freivalds3x freivalds4x
 fi
 
 jobs=(

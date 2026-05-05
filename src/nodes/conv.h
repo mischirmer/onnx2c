@@ -388,7 +388,7 @@ class Conv : public SpatialFilter {
 					INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) { uint32_t bit = ABYZFT_randbit(&freivalds_state); r_mask[mi] = (uint8_t)bit; r_any |= bit; }" << std::endl;
 					INDT_5 << "if( r_any == 0 ) r_mask[0] = 1u;" << std::endl;
 				} else {
-					INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) r_vec[mi] = ABYZFT_randn(&freivalds_state);" << std::endl;
+					INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) r_vec[mi] = ABYZFT_rand01(&freivalds_state);" << std::endl;
 				}
 				INDT_5 << "float b_rs[" << K << "];" << std::endl;
 				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) b_rs[kk2] = 0;" << std::endl;
@@ -491,13 +491,7 @@ class Conv : public SpatialFilter {
 	virtual void print(std::ostream& dst) const override
 	{
 		print_header_info_comment(dst);
-		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || options.freivalds_gemm || options.gvfa_gemm;
-		if (options.conv_im2col || checksum_enabled) {
-			print_im2col_matmul(dst);
-		}
-		else {
-			print_loop_with_padding_checks(dst);
-		}
+		print_loop_with_padding_checks(dst);
 	}
 
 	virtual void resolve(void) override
