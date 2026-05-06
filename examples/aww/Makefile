@@ -9,7 +9,7 @@ CPPFLAGS ?=
 ONNX2C ?= ../../build/onnx2c
 IM2COL_OPT ?= -p im2col_all
 ONNX2C_FLAGS ?= $(IM2COL_OPT) --log=1
-TFLITE_INT8 ?= ../../tiny/benchmark/training/keyword_spotting/trained_models/kws_ref_model.tflite
+TFLITE_INT8 ?= /home/ge96fak/Documents/Code/fault-tolerance/tiny/benchmark/training/keyword_spotting/trained_models/kws_ref_model.tflite
 BUILD_DIR ?= build
 
 FP32_ONNX ?= tiny_kws_ref_fp32.onnx

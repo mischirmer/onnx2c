@@ -21,8 +21,12 @@ def _glob_mechs(build_dir: Path, prefix: str) -> List[str]:
 
 
 def _sort_key_mech(m: str) -> Tuple[int, int, str]:
+    if m == "baseline_raw":
+        return (-1, 0, m)
     if m == "baseline":
         return (0, 0, m)
+    if m == "baseline_int16":
+        return (0, 1, m)
     if m == "abft":
         return (1, 0, m)
     if m == "abyzft":
@@ -108,6 +112,10 @@ def main() -> int:
     wanted = None
     if args.mechanisms.strip():
         wanted = {x.strip() for x in args.mechanisms.split(",") if x.strip()}
+        # Always include both baselines for dual-overhead reporting when available.
+        wanted.add("baseline")
+        wanted.add("baseline_raw")
+        wanted.add("baseline_int16")
 
     if args.quant == "both":
         quants = ["fp32", "int8"]
@@ -120,11 +128,16 @@ def main() -> int:
         mechs = _discover_mechanisms(build_dir, q)
         if wanted is not None:
             mechs = [m for m in mechs if m in wanted]
+        # baseline_int16 is only meaningful for quantized int8 flow.
+        if q == "fp32":
+            mechs = [m for m in mechs if m != "baseline_int16"]
         if not mechs:
             print(f"[{q}] no binaries found for selected mechanisms", file=sys.stderr)
             continue
         if "baseline" not in mechs:
-            print(f"[{q}] warning: baseline not found; overheads will be N/A", file=sys.stderr)
+            print(f"[{q}] warning: baseline (im2col) not found; overhead_vs_baseline will be N/A", file=sys.stderr)
+        if "baseline_raw" not in mechs:
+            print(f"[{q}] warning: baseline_raw not found; overhead_vs_baseline_raw will be N/A", file=sys.stderr)
 
         prefix = "aww_fp32_" if q == "fp32" else "aww_int8_"
         if not any((build_dir / f"{prefix}{m}").exists() for m in mechs):
@@ -181,11 +194,18 @@ def main() -> int:
             continue
 
         baseline_med = stats["baseline"]["median_s"] if "baseline" in stats else math.nan
+        baseline_raw_med = stats["baseline_raw"]["median_s"] if "baseline_raw" in stats else math.nan
 
-        print("mechanism           mean[s]    median[s]   std[s]     overhead_vs_baseline")
-        print("------------------  ---------  ----------  ---------  --------------------")
+        print("mechanism           mean[s]    median[s]   std[s]     overhead_vs_baseline_raw   overhead_vs_baseline")
+        print("------------------  ---------  ----------  ---------  --------------------------  --------------------")
         for mech in sorted(stats.keys(), key=_sort_key_mech):
             s = stats[mech]
+            if math.isnan(baseline_raw_med) or baseline_raw_med <= 0:
+                ov_raw_txt = "N/A"
+                ov_raw = math.nan
+            else:
+                ov_raw = (s["median_s"] / baseline_raw_med) - 1.0
+                ov_raw_txt = _fmt_pct(ov_raw)
             if math.isnan(baseline_med) or baseline_med <= 0:
                 ov_txt = "N/A"
                 ov = math.nan
@@ -193,7 +213,7 @@ def main() -> int:
                 ov = (s["median_s"] / baseline_med) - 1.0
                 ov_txt = _fmt_pct(ov)
             print(
-                f"{mech:<18}  {s['mean_s']:>9.4f}  {s['median_s']:>10.4f}  {s['std_s']:>9.4f}  {ov_txt:>20}"
+                f"{mech:<18}  {s['mean_s']:>9.4f}  {s['median_s']:>10.4f}  {s['std_s']:>9.4f}  {ov_raw_txt:>26}  {ov_txt:>20}"
             )
 
             records.append(
@@ -203,6 +223,7 @@ def main() -> int:
                     "mean_s": f"{s['mean_s']:.8f}",
                     "median_s": f"{s['median_s']:.8f}",
                     "std_s": f"{s['std_s']:.8f}",
+                    "overhead_vs_baseline_raw": "" if math.isnan(ov_raw) else f"{ov_raw:.8f}",
                     "overhead_vs_baseline": "" if math.isnan(ov) else f"{ov:.8f}",
                     "limit": str(args.limit),
                     "repeats": str(args.repeats),
@@ -221,6 +242,7 @@ def main() -> int:
                     "mean_s",
                     "median_s",
                     "std_s",
+                    "overhead_vs_baseline_raw",
                     "overhead_vs_baseline",
                     "limit",
                     "repeats",

@@ -456,6 +456,8 @@ void Im2Col::print_protected_conv_node(std::ostream& dst) const
     if (abyzft_enabled) {
         dst << "\t        uint32_t abyzft_a_state = (uint32_t)(0xDEADBEEFu ^ LAYER_ID ^ b ^ g ^ (uint32_t)oy ^ (uint32_t)ox);" << std::endl;
         dst << "\t        float abyzft_scaleA = 0.25f + 3.75f * ABYZFT_rand01(&abyzft_a_state);" << std::endl;
+        dst << "\t        float col_scaled[" << K << "];" << std::endl;
+        dst << "\t        for(uint32_t kk2 = 0; kk2 < K; kk2++) col_scaled[kk2] = (float)col[kk2] * abyzft_scaleA;" << std::endl;
     }
     dst << "\t        for(uint32_t m0 = g * " << out_ch_per_group << "u; m0 < (g + 1u) * " << out_ch_per_group << "u; m0 += MTILE) {" << std::endl;
     dst << "\t          uint32_t m1 = MIN(m0 + MTILE, (g + 1u) * " << out_ch_per_group << "u);" << std::endl;
@@ -465,16 +467,18 @@ void Im2Col::print_protected_conv_node(std::ostream& dst) const
     // Matmul: no bias in scaled part for AByzFT; non-AByzFT includes bias as usual
     if (abyzft_enabled) {
         dst << "\t            float acc = 0.0f;" << std::endl;
+        dst << "\t            float acc_scaled = 0.0f;" << std::endl;
         dst << "\t            uint32_t k = 0;" << std::endl;
         dst << "\t            for(uint32_t c0 = 0; c0 < " << in_ch_per_group << "u; c0++) {" << std::endl;
         dst << "\t              for(uint32_t ky = 0; ky < " << kernel_h << "u; ky++) {" << std::endl;
         dst << "\t                for(uint32_t kx = 0; kx < " << kernel_w << "u; kx++) {" << std::endl;
-        dst << "\t                  acc += col[k++] * w[m][c0][ky][kx];" << std::endl;
+        dst << "\t                  float w_scaled = (float)w[m][c0][ky][kx] * abyzft_scaleB_cache[tile_idx][m - m0];" << std::endl;
+        dst << "\t                  acc_scaled += col_scaled[k++] * w_scaled;" << std::endl;
         dst << "\t                }" << std::endl;
         dst << "\t              }" << std::endl;
         dst << "\t            }" << std::endl;
         dst << "\t            float _sAB = abyzft_scaleA * abyzft_scaleB_cache[tile_idx][m - m0];" << std::endl;
-        dst << "\t            float acc_scaled = acc * _sAB;" << std::endl;
+        dst << "\t            acc = (_sAB != 0.0f) ? (acc_scaled / _sAB) : acc_scaled;" << std::endl;
     } else {
         dst << "\t            " << ytype << " acc = " << (has_bias ? "(float)bias[m]" : "0.0f") << ";" << std::endl;
         dst << "\t            uint32_t k = 0;" << std::endl;
