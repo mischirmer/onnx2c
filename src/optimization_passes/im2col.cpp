@@ -5,13 +5,14 @@
  * Handles: Conv, depthwise (group>1), and pointwise (1x1) convolutions.
  */
 
+#include "nodes/im2col.h"
 #include "graph.h"
 #include "nodes/spatialfilter.h"
-#include "nodes/im2col.h"
 #include "options.h"
 
-#include <cstdint>
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 
 using namespace toC;
 
@@ -75,30 +76,35 @@ static bool can_be_im2col(SpatialFilter* conv, Tensor* X, Tensor* W, Tensor* Y)
 	return true;
 }
 
-static bool has_non_unit_dilation(SpatialFilter* conv)
+struct Im2ColHeuristicParams {
+	int64_t tile_m = 16;
+	int64_t tile_n = 16;
+	int64_t tile_k = 16;
+};
+
+struct Im2ColDecision {
+	int64_t m = 0;
+	int64_t k = 0;
+	int64_t n = 0;
+	int64_t input_bytes = 0;
+	int64_t output_bytes = 0;
+	int64_t weight_bytes = 0;
+	int64_t im2col_bytes = 0;
+	double expansion_ratio = 0.0;
+	double utilization = 0.0;
+	int score = 0;
+	bool selected = false;
+	std::string reason;
+};
+
+static int64_t ceil_to_tile(int64_t value, int64_t tile)
 {
-	for (auto dilation : conv->dilations) {
-		if (dilation != 1)
-			return true;
-	}
-	return false;
+	return ((value + tile - 1) / tile) * tile;
 }
 
-static bool has_non_unit_stride(SpatialFilter* conv)
-{
-	for (auto stride : conv->strides) {
-		if (stride != 1)
-			return true;
-	}
-	return false;
-}
-
-static bool convinteger_has_zero_points(SpatialFilter* conv)
-{
-	return conv->op_name == "ConvInteger" && conv->get_number_of_inputs() >= 4;
-}
-
-static bool should_use_im2col_heuristic(SpatialFilter* conv, Tensor* X, Tensor* W, Tensor* Y)
+static Im2ColDecision evaluate_im2col_heuristic(
+    SpatialFilter* conv, Tensor* X, Tensor* W, Tensor* Y,
+    const Im2ColHeuristicParams& params = Im2ColHeuristicParams())
 {
 	int64_t batch = X->data_dim[0];
 	int64_t in_ch = X->data_dim[1];
@@ -112,103 +118,63 @@ static bool should_use_im2col_heuristic(SpatialFilter* conv, Tensor* X, Tensor* 
 	int64_t group = conv->group;
 	int64_t in_ch_per_group = in_ch / group;
 
-	int64_t ifm_area = in_h * in_w;
-	int64_t output_positions = batch * out_h * out_w;
-	int64_t output_cells = batch * out_h * out_w * out_ch;
 	int64_t kernel_area = kernel_h * kernel_w;
-	int64_t kernel_elems_per_output = in_ch_per_group * kernel_area;
-	int64_t lowered_elems = batch * out_h * out_w * in_ch_per_group * kernel_area;
-	int64_t macs = output_cells * kernel_elems_per_output;
-	bool grouped = group > 1;
-	bool pointwise = kernel_h == 1 && kernel_w == 1;
-	bool dilated = has_non_unit_dilation(conv);
-	bool strided = has_non_unit_stride(conv);
+	int64_t stride_h = conv->strides.size() >= 1 ? conv->strides[0] : 1;
+	int64_t stride_w = conv->strides.size() >= 2 ? conv->strides[1] : 1;
 
-	// The Arm Compute Library CPU heuristic routes non-unit dilation to
-	// Im2Col+GEMM. onnx2c only selects between direct loops and the fused
-	// im2col loops, but dilation is still a strong indicator that the
-	// im2col-style loop order is useful.
-	if (dilated)
-		return true;
+	Im2ColDecision d;
+	d.m = out_ch;
+	d.k = in_ch_per_group * kernel_area;
+	d.n = batch * out_h * out_w;
+	d.input_bytes = batch * in_ch * in_h * in_w * X->data_elem_size();
+	d.output_bytes = batch * out_ch * out_h * out_w * Y->data_elem_size();
+	d.weight_bytes = out_ch * in_ch_per_group * kernel_h * kernel_w * W->data_elem_size();
+	d.im2col_bytes = d.n * d.k * X->data_elem_size();
+	d.expansion_ratio = d.input_bytes > 0 ? (double)d.im2col_bytes / (double)d.input_bytes : INFINITY;
 
-	// Avoid forcing the transformation on very large lowered matrices by
-	// default. In a classical im2col implementation this corresponds to a
-	// large temporary workspace; for onnx2c's fused implementation it is still
-	// a useful proxy for cases where direct convolution may be preferable.
-	const int64_t large_lowered_matrix_elems = 2 * 1024 * 1024;
-	if (lowered_elems > large_lowered_matrix_elems)
-		return false;
+	int64_t tiled_m = ceil_to_tile(d.m, params.tile_m);
+	int64_t tiled_n = ceil_to_tile(d.n, params.tile_n);
+	int64_t tiled_k = ceil_to_tile(d.k, params.tile_k);
+	double tiled_work = (double)tiled_m * (double)tiled_n * (double)tiled_k;
+	d.utilization = tiled_work > 0.0 ? ((double)d.m * (double)d.k * (double)d.n) / tiled_work : 0.0;
 
-	if (conv->op_name == "QLinearConv") {
-		// Quantized output rescaling and clamping is paid once per output
-		// element. The benchmarks show that this leaves little headroom for
-		// im2col unless the problem is modest and ungrouped.
-		if (pointwise)
-			return false;
+	// Performance-oriented algorithm selection only. This intentionally does
+	// not reject based on im2col workspace size or expansion ratio; memory
+	// overhead is reported separately by the benchmark tooling.
+	d.score = 2;
+	if (d.k < 3)
+		d.score -= 3;
+	if (stride_h == 1 && stride_w == 1 && d.k >= 32 && d.k <= 128)
+		d.score -= 3;
 
-		if (grouped)
-			return false;
-
-		// The 64x64 stride-1 benchmark is already in the regime where the
-		// quantized finalize path can dominate, so only keep the smaller
-		// stride-1 cases on the im2col path.
-		if (!strided && output_positions >= 4096)
-			return false;
-
-		return macs >= 256 * 1024;
+	if (d.score < 0) {
+		d.reason = "reject: direct Conv favored for skinny or stride-1 mid-K workload";
+		return d;
 	}
 
-	if (conv->op_name == "ConvInteger") {
-		// Zero-point subtraction already adds per-MAC overhead in the baseline
-		// kernel. For strided integer convs with zero-points, the im2col loop
-		// order consistently regressed in the benchmark set.
-		if (convinteger_has_zero_points(conv) && strided)
-			return false;
+	d.selected = true;
+	d.reason = "select: GEMM-style im2col path favored by performance heuristic";
+	return d;
+}
 
-		// Integer pointwise kernels did not show a stable win in the benchmark
-		// sweep, so keep them on the direct path by default.
-		if (pointwise)
-			return false;
-
-		// For stride-1 integer convs, the medium-sized 64x64 3x3 case regressed
-		// while the small 32x32 case benefited and larger cases were near
-		// parity. Keep only the clearly good small stride-1 region.
-		if (!strided) {
-			if (kernel_area > 9)
-				return output_positions >= 1024;
-
-			return output_positions <= 1024;
-		}
-
-		return true;
-	}
-
-	if (pointwise) {
-		// For floating-point 1x1 convolutions there is no padding/bounds work to
-		// eliminate, and the larger pointwise cases in the benchmark sweep did
-		// not show a stable win. Keep them on the direct path by default.
-		return false;
-	}
-
-	// Small feature maps are generally good candidates for GEMM-style loop
-	// orders because the overhead is low and the reuse is dense.
-	if (ifm_area <= 64)
-		return true;
-
-	// Depthwise/grouped convolutions have a small per-output reduction and tend
-	// to benefit from avoiding the generic direct grouped loop structure.
-	if (grouped)
-		return true;
-
-	// The benchmarked float 5x5 case regressed despite having enough total work
-	// because the wider kernel increases indexing and bounds overhead more than
-	// the fused im2col order recovers on this CPU.
-	if (kernel_area > 9)
-		return false;
-
-	// For regular kernels, require a modest amount of arithmetic work before
-	// choosing im2col by default.
-	return kernel_area > 1 && macs >= 4096;
+static void log_im2col_decision(SpatialFilter* conv, Tensor* X, Tensor* W, Tensor* Y, const Im2ColDecision& d)
+{
+	LOG(DEBUG) << "  im2col decision:"
+	           << " layer=" << conv->onnx_name
+	           << " input=[" << X->data_dim[0] << "," << X->data_dim[1] << "," << X->data_dim[2] << "," << X->data_dim[3] << "]"
+	           << " output=[" << Y->data_dim[0] << "," << Y->data_dim[1] << "," << Y->data_dim[2] << "," << Y->data_dim[3] << "]"
+	           << " kernel=[" << W->data_dim[2] << "," << W->data_dim[3] << "]"
+	           << " groups=" << conv->group
+	           << " M=" << d.m
+	           << " N=" << d.n
+	           << " K=" << d.k
+	           << " im2col_bytes=" << d.im2col_bytes
+	           << " expansion_ratio=" << d.expansion_ratio
+	           << " utilization=" << d.utilization
+	           << " score=" << d.score
+	           << " selected=" << (d.selected ? "yes" : "no")
+	           << " reason=\"" << d.reason << "\""
+	           << std::endl;
 }
 
 static Im2Col::ArithmeticMode arithmetic_mode_for(Node* n)
@@ -253,10 +219,13 @@ void Graph::im2col(void)
 			continue;
 		}
 
-		if (options.opt_im2col_mode == im2col_mode::HEURISTIC &&
-		    !should_use_im2col_heuristic(conv, X, W, Y)) {
-			LOG(DEBUG) << "  Skipping: im2col heuristic selected baseline Conv" << std::endl;
-			continue;
+		if (options.opt_im2col_mode == im2col_mode::HEURISTIC) {
+			Im2ColDecision decision = evaluate_im2col_heuristic(conv, X, W, Y);
+			log_im2col_decision(conv, X, W, Y, decision);
+			if (!decision.selected) {
+				LOG(DEBUG) << "  Skipping: im2col heuristic selected baseline Conv" << std::endl;
+				continue;
+			}
 		}
 
 		candidates.push_back(n);

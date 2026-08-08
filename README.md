@@ -89,6 +89,17 @@ Onnx2c has a few optimization passes that modify the generated output:
  - `im2col` optimization for convolution layers.
  - Optimization for AVR processors to put constants into instruction memory.
 
+The convolution `im2col` pass lowers supported `Conv` nodes to an explicit
+im2col temporary followed by generated matrix multiplication code. This can
+improve runtime for some convolution shapes, but it also adds temporary
+workspace proportional to the im2col materialization size.
+
+Available im2col policies are:
+
+ - `im2col` or `im2col_heuristic`: enable the default per-layer heuristic.
+ - `im2col_all`: force im2col for every supported convolution layer.
+ - `none`: keep convolution layers on the direct generated Conv path.
+
 `./onnx2c -h` prints out all available command line options.
 
 onnx2c prints a log on stdout. Log level can be given with the `-l N` command line option.
