@@ -24,6 +24,7 @@ struct onnx2c_opts {
 	bool opt_fold_casts = true;
 	bool opt_im2col = false;
 	im2col_mode opt_im2col_mode = im2col_mode::HEURISTIC;
+	int output_precision = 20;
 /*
  * logging levels are
  * cmd line     aixlog     Use

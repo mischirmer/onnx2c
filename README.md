@@ -100,6 +100,9 @@ Available im2col policies are:
  - `im2col_all`: force im2col for every supported convolution layer.
  - `none`: keep convolution layers on the direct generated Conv path.
 
+Floating-point output precision can be configured with `--precision N`.
+If omitted, onnx2c uses a precision of `20`.
+
 `./onnx2c -h` prints out all available command line options.
 
 onnx2c prints a log on stdout. Log level can be given with the `-l N` command line option.
