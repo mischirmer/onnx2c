@@ -27,7 +27,7 @@ target_compile_options(testgen_singlefile
 
 add_test(
 	NAME im2col_heuristic_selection
-	COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/im2col_heuristic_test.py $<TARGET_FILE:onnx2c>
+	COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/im2col_heuristic_test.py $<TARGET_FILE:onnx2c> ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks
 )
 
 
