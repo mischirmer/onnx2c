@@ -798,7 +798,7 @@ ONNX_backend_node_test_singlefile(resize_upsample_sizes_nearest_round_prefer_cei
 local_node_test(resize_downsample_sizes_linear_1D)
 local_node_test(resize_downsample_sizes_linear_1D_align)
 
-llocal_node_test(qgemm_int8_bias_per_output)
+local_node_test(qgemm_int8_bias_per_output)
 local_node_test(qgemm_uint8_scalar_bias)
 local_node_test(qgemm_uint8_transB_row_bias)
 
