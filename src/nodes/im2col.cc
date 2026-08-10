@@ -43,7 +43,7 @@ void Im2Col::print_node(std::ostream& dst) const
 
 void Im2Col::print_implicit_node(std::ostream& dst) const
 {
-	dst << "\t/* Fused Im2Col + MatMul (equivalent to conv but computed differently) */" << std::endl;
+	dst << "\t/* Implicit/Fused Im2Col Conv */" << std::endl;
 
 	dst << "\tfor(uint32_t b = 0; b < " << batch << "; b++) {" << std::endl;
 	dst << "\t  for(uint32_t m = 0; m < " << out_ch << "; m++) {" << std::endl;
@@ -123,7 +123,7 @@ void Im2Col::print_explicit_node(std::ostream& dst) const
 	int64_t elem_size = X->data_elem_size();
 	int64_t workspace_bytes = k_dim * p_dim * elem_size;
 
-	dst << "\t/* Explicit Im2Col materialization */" << std::endl;
+	dst << "\t/* Explicit/Materialized Im2Col Conv */" << std::endl;
 	dst << "\t/* Layout: x_col[K][P], K=(Cin/groups)*Kh*Kw=" << k_dim
 	    << ", P=Hout*Wout=" << p_dim << ". */" << std::endl;
 	dst << "\t/* Peak live explicit im2col workspace: " << workspace_bytes

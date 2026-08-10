@@ -157,6 +157,7 @@ class SpatialFilter : public Node {
 
 	void print_header_info_comment(std::ostream& dst) const
 	{
+		INDT_1 << "/* Direct Conv */" << std::endl;
 		INDT_1 << "/* " << op_name << std::endl;
 		INDT_1 << " *" << std::endl;
 		INDT_1 << " * auto_pad: " << auto_pad << std::endl;

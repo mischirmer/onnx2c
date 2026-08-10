@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <unordered_map>
 
 using namespace toC;
 
@@ -95,6 +96,12 @@ struct Im2ColHeuristicParams {
 	int64_t tile_k = 16;
 };
 
+enum class ConvImplementation {
+	Direct,
+	Implicit,
+	Explicit,
+};
+
 struct Im2ColDecision {
 	int64_t m = 0;
 	int64_t k = 0;
@@ -106,7 +113,7 @@ struct Im2ColDecision {
 	double expansion_ratio = 0.0;
 	double utilization = 0.0;
 	int score = 0;
-	bool selected = false;
+	ConvImplementation implementation = ConvImplementation::Direct;
 	std::string reason;
 };
 
@@ -115,7 +122,20 @@ static int64_t ceil_to_tile(int64_t value, int64_t tile)
 	return ((value + tile - 1) / tile) * tile;
 }
 
-static Im2ColDecision evaluate_im2col_heuristic(
+static const char* implementation_name(ConvImplementation implementation)
+{
+	switch (implementation) {
+		case ConvImplementation::Direct:
+			return "direct";
+		case ConvImplementation::Implicit:
+			return "implicit";
+		case ConvImplementation::Explicit:
+			return "explicit";
+	}
+	return "direct";
+}
+
+static Im2ColDecision evaluate_conv_implementation_heuristic(
     SpatialFilter* conv, Tensor* X, Tensor* W, Tensor* Y,
     const Im2ColHeuristicParams& params = Im2ColHeuristicParams())
 {
@@ -132,11 +152,8 @@ static Im2ColDecision evaluate_im2col_heuristic(
 	int64_t in_ch_per_group = in_ch / group;
 
 	int64_t kernel_area = kernel_h * kernel_w;
-	int64_t stride_h = conv->strides.size() >= 1 ? conv->strides[0] : 1;
-	int64_t stride_w = conv->strides.size() >= 2 ? conv->strides[1] : 1;
-
 	Im2ColDecision d;
-	d.m = out_ch;
+	d.m = out_ch / group;
 	d.k = in_ch_per_group * kernel_area;
 	d.n = batch * out_h * out_w;
 	d.input_bytes = batch * in_ch * in_h * in_w * X->data_elem_size();
@@ -151,22 +168,33 @@ static Im2ColDecision evaluate_im2col_heuristic(
 	double tiled_work = (double)tiled_m * (double)tiled_n * (double)tiled_k;
 	d.utilization = tiled_work > 0.0 ? ((double)d.m * (double)d.k * (double)d.n) / tiled_work : 0.0;
 
-	// Performance-oriented algorithm selection only. This intentionally does
-	// not reject based on im2col workspace size or expansion ratio; memory
-	// overhead is reported separately by the benchmark tooling.
-	d.score = 2;
-	if (d.k < 3)
-		d.score -= 3;
-	if (stride_h == 1 && stride_w == 1 && d.k >= 32 && d.k <= 128)
-		d.score -= 3;
+	bool explicit_supported = can_use_explicit_materialized_im2col(X, W, Y);
 
-	if (d.score < 0) {
-		d.reason = "reject: direct Conv favored for skinny or stride-1 mid-K workload";
+	// Performance-oriented implementation selection only. This intentionally
+	// does not use im2col workspace size or expansion ratio; memory overhead is
+	// reported separately by the benchmark tooling.
+	bool depthwise = group == in_ch && group == out_ch;
+
+	if (depthwise) {
+		d.implementation = ConvImplementation::Implicit;
+		d.reason = "implicit: depthwise Conv is usually fastest without materialized im2col";
 		return d;
 	}
 
-	d.selected = true;
-	d.reason = "select: GEMM-style im2col path favored by performance heuristic";
+	if (kernel_area == 1 && d.k <= 32 && d.n >= 3136) {
+		d.implementation = ConvImplementation::Direct;
+		d.reason = "direct: low-K 1x1 large-spatial Conv is faster without im2col lowering";
+		return d;
+	}
+
+	if (explicit_supported) {
+		d.implementation = ConvImplementation::Explicit;
+		d.reason = "explicit: non-depthwise Conv favors materialized im2col GEMM";
+		return d;
+	}
+
+	d.implementation = ConvImplementation::Implicit;
+	d.reason = "implicit: explicit materialization is unsupported for this Conv arithmetic";
 	return d;
 }
 
@@ -185,7 +213,8 @@ static void log_im2col_decision(SpatialFilter* conv, Tensor* X, Tensor* W, Tenso
 	           << " expansion_ratio=" << d.expansion_ratio
 	           << " utilization=" << d.utilization
 	           << " score=" << d.score
-	           << " selected=" << (d.selected ? "yes" : "no")
+	           << " implementation=" << implementation_name(d.implementation)
+	           << " selected=" << (d.implementation == ConvImplementation::Direct ? "no" : "yes")
 	           << " reason=\"" << d.reason << "\""
 	           << std::endl;
 }
@@ -204,6 +233,7 @@ void Graph::im2col(void)
 	LOG(DEBUG) << "Optimisation pass: im2col" << std::endl;
 
 	std::vector<Node*> candidates;
+	std::unordered_map<Node*, ConvImplementation> implementations;
 
 	LOG(TRACE) << "im2col pass: entered" << std::endl;
 
@@ -232,26 +262,30 @@ void Graph::im2col(void)
 			continue;
 		}
 
-		if (options.opt_im2col_mode == im2col_mode::IMPLICIT_HEURISTIC ||
-		    options.opt_im2col_mode == im2col_mode::EXPLICIT_HEURISTIC) {
-			Im2ColDecision decision = evaluate_im2col_heuristic(conv, X, W, Y);
+		ConvImplementation implementation = ConvImplementation::Direct;
+		if (options.opt_im2col_mode == im2col_mode::HEURISTIC) {
+			Im2ColDecision decision = evaluate_conv_implementation_heuristic(conv, X, W, Y);
 			log_im2col_decision(conv, X, W, Y, decision);
-			if (!decision.selected) {
+			implementation = decision.implementation;
+			if (implementation == ConvImplementation::Direct) {
 				LOG(DEBUG) << "  Selected implementation: direct Conv" << std::endl;
 				continue;
 			}
-			if (options.opt_im2col_mode == im2col_mode::EXPLICIT_HEURISTIC)
-				LOG(DEBUG) << "  Selected implementation: explicit/materialized im2col (heuristic, where supported)" << std::endl;
-			else
-				LOG(DEBUG) << "  Selected implementation: implicit/fused im2col" << std::endl;
+			LOG(DEBUG) << "  Selected implementation: " << implementation_name(implementation) << " im2col" << std::endl;
 		}
-		else if (options.opt_im2col_mode == im2col_mode::IMPLICIT_ALL) {
+		else if (options.opt_im2col_mode == im2col_mode::IMPLICIT) {
+			implementation = ConvImplementation::Implicit;
 			LOG(DEBUG) << "  Selected implementation: implicit/fused im2col (forced)" << std::endl;
 		}
-		else if (options.opt_im2col_mode == im2col_mode::EXPLICIT_ALL) {
+		else if (options.opt_im2col_mode == im2col_mode::EXPLICIT) {
+			implementation = can_use_explicit_materialized_im2col(X, W, Y) ? ConvImplementation::Explicit : ConvImplementation::Implicit;
 			LOG(DEBUG) << "  Selected implementation: explicit/materialized im2col (forced where supported)" << std::endl;
 		}
+		else {
+			continue;
+		}
 
+		implementations[n] = implementation;
 		candidates.push_back(n);
 	}
 
@@ -266,12 +300,7 @@ void Graph::im2col(void)
 		im2col->onnx_name = conv->onnx_name + "_im2col";
 		im2col->isResolved = true;
 		im2col->arithmetic_mode = arithmetic_mode_for(n);
-		im2col->implementation = ((options.opt_im2col_mode == im2col_mode::EXPLICIT_ALL ||
-		                           options.opt_im2col_mode == im2col_mode::EXPLICIT_HEURISTIC) &&
-		                          im2col->arithmetic_mode == Im2Col::Conv &&
-		                          can_use_explicit_materialized_im2col(X, W, Y)) ?
-		                             Im2Col::Explicit :
-		                             Im2Col::Implicit;
+		im2col->implementation = implementations[n] == ConvImplementation::Explicit ? Im2Col::Explicit : Im2Col::Implicit;
 
 		im2col->batch = X->data_dim[0];
 		im2col->in_ch = X->data_dim[1];
