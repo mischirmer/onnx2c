@@ -54,6 +54,19 @@ static bool is_arithmetic_type(onnx::TensorProto_DataType t)
 	       t == onnx::TensorProto_DataType_UINT64;
 }
 
+static bool is_native_float_type(onnx::TensorProto_DataType t)
+{
+	return t == onnx::TensorProto_DataType_FLOAT ||
+	       t == onnx::TensorProto_DataType_DOUBLE;
+}
+
+static bool can_use_explicit_materialized_im2col(Tensor* X, Tensor* W, Tensor* Y)
+{
+	return is_native_float_type(X->data_type) &&
+	       is_native_float_type(W->data_type) &&
+	       is_native_float_type(Y->data_type);
+}
+
 static bool can_be_im2col(SpatialFilter* conv, Tensor* X, Tensor* W, Tensor* Y)
 {
 	if (X->rank() != 4 || W->rank() != 4 || Y->rank() != 4)
@@ -219,13 +232,24 @@ void Graph::im2col(void)
 			continue;
 		}
 
-		if (options.opt_im2col_mode == im2col_mode::HEURISTIC) {
+		if (options.opt_im2col_mode == im2col_mode::IMPLICIT_HEURISTIC ||
+		    options.opt_im2col_mode == im2col_mode::EXPLICIT_HEURISTIC) {
 			Im2ColDecision decision = evaluate_im2col_heuristic(conv, X, W, Y);
 			log_im2col_decision(conv, X, W, Y, decision);
 			if (!decision.selected) {
-				LOG(DEBUG) << "  Skipping: im2col heuristic selected baseline Conv" << std::endl;
+				LOG(DEBUG) << "  Selected implementation: direct Conv" << std::endl;
 				continue;
 			}
+			if (options.opt_im2col_mode == im2col_mode::EXPLICIT_HEURISTIC)
+				LOG(DEBUG) << "  Selected implementation: explicit/materialized im2col (heuristic, where supported)" << std::endl;
+			else
+				LOG(DEBUG) << "  Selected implementation: implicit/fused im2col" << std::endl;
+		}
+		else if (options.opt_im2col_mode == im2col_mode::IMPLICIT_ALL) {
+			LOG(DEBUG) << "  Selected implementation: implicit/fused im2col (forced)" << std::endl;
+		}
+		else if (options.opt_im2col_mode == im2col_mode::EXPLICIT_ALL) {
+			LOG(DEBUG) << "  Selected implementation: explicit/materialized im2col (forced where supported)" << std::endl;
 		}
 
 		candidates.push_back(n);
@@ -242,6 +266,12 @@ void Graph::im2col(void)
 		im2col->onnx_name = conv->onnx_name + "_im2col";
 		im2col->isResolved = true;
 		im2col->arithmetic_mode = arithmetic_mode_for(n);
+		im2col->implementation = ((options.opt_im2col_mode == im2col_mode::EXPLICIT_ALL ||
+		                           options.opt_im2col_mode == im2col_mode::EXPLICIT_HEURISTIC) &&
+		                          im2col->arithmetic_mode == Im2Col::Conv &&
+		                          can_use_explicit_materialized_im2col(X, W, Y)) ?
+		                             Im2Col::Explicit :
+		                             Im2Col::Implicit;
 
 		im2col->batch = X->data_dim[0];
 		im2col->in_ch = X->data_dim[1];

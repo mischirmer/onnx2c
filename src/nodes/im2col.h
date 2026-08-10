@@ -11,11 +11,17 @@ class Im2Col : public Node {
 		ConvInteger,
 		QLinearConv,
 	};
+	enum Implementation {
+		Implicit,
+		Explicit,
+	};
 
 	Im2Col();
 	std::string c_name(void) const;
 	std::string c_output_decl(void);
 	void print_node(std::ostream& dst) const;
+	void print_implicit_node(std::ostream& dst) const;
+	void print_explicit_node(std::ostream& dst) const;
 	void resolve_datatypes(void);
 	void print(std::ostream& destination) const override;
 	void print_accumulator_init(std::ostream& dst) const;
@@ -23,6 +29,7 @@ class Im2Col : public Node {
 	void print_accumulator_finalize(std::ostream& dst) const;
 
 	ArithmeticMode arithmetic_mode = Conv;
+	Implementation implementation = Implicit;
 	int64_t batch = 1;
 	int64_t in_ch = 1;
 	int64_t out_ch = 1;

@@ -11,8 +11,10 @@
 #include <vector>
 
 enum class im2col_mode {
-	HEURISTIC,
-	ALL,
+	IMPLICIT_HEURISTIC,
+	EXPLICIT_HEURISTIC,
+	IMPLICIT_ALL,
+	EXPLICIT_ALL,
 };
 
 struct onnx2c_opts {
@@ -23,7 +25,7 @@ struct onnx2c_opts {
 	bool opt_unionize = true;
 	bool opt_fold_casts = true;
 	bool opt_im2col = false;
-	im2col_mode opt_im2col_mode = im2col_mode::HEURISTIC;
+	im2col_mode opt_im2col_mode = im2col_mode::IMPLICIT_HEURISTIC;
 	int output_precision = 20;
 /*
  * logging levels are

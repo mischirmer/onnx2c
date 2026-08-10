@@ -35,6 +35,14 @@ std::string Im2Col::c_output_decl(void)
 
 void Im2Col::print_node(std::ostream& dst) const
 {
+	if (implementation == Explicit)
+		print_explicit_node(dst);
+	else
+		print_implicit_node(dst);
+}
+
+void Im2Col::print_implicit_node(std::ostream& dst) const
+{
 	dst << "\t/* Fused Im2Col + MatMul (equivalent to conv but computed differently) */" << std::endl;
 
 	dst << "\tfor(uint32_t b = 0; b < " << batch << "; b++) {" << std::endl;
@@ -94,6 +102,107 @@ void Im2Col::print_node(std::ostream& dst) const
 	dst << "\t    }" << std::endl;
 	dst << "\t  }" << std::endl;
 	dst << "\t}" << std::endl;
+}
+
+void Im2Col::print_explicit_node(std::ostream& dst) const
+{
+	if (arithmetic_mode != Conv) {
+		dst << "\t/* Explicit Im2Col is only implemented for floating-point Conv; using implicit path. */" << std::endl;
+		print_implicit_node(dst);
+		return;
+	}
+
+	int64_t in_ch_per_group = in_ch / group;
+	int64_t out_ch_per_group = out_ch / group;
+	int64_t k_dim = in_ch_per_group * kernel_h * kernel_w;
+	int64_t p_dim = out_h * out_w;
+	const Tensor* X = get_input_tensor(0);
+	const Tensor* Y = get_output_tensor(0);
+	std::string x_type = X->data_type_str();
+	std::string y_type = Y->data_type_str();
+	int64_t elem_size = X->data_elem_size();
+	int64_t workspace_bytes = k_dim * p_dim * elem_size;
+
+	dst << "\t/* Explicit Im2Col materialization */" << std::endl;
+	dst << "\t/* Layout: x_col[K][P], K=(Cin/groups)*Kh*Kw=" << k_dim
+	    << ", P=Hout*Wout=" << p_dim << ". */" << std::endl;
+	dst << "\t/* Peak live explicit im2col workspace: " << workspace_bytes
+	    << " bytes per batch/group. */" << std::endl;
+	dst << "\t" << x_type << "* x_col = (" << x_type << "*)calloc((size_t)" << k_dim << " * (size_t)" << p_dim << ", sizeof(" << x_type << "));" << std::endl;
+	dst << "\tif (!x_col) return;" << std::endl;
+	dst << "\t#ifdef ONNX2C_EXPLICIT_IM2COL_PROFILE" << std::endl;
+	dst << "\tdouble onnx2c_im2col_materialize_ms = 0.0;" << std::endl;
+	dst << "\tdouble onnx2c_im2col_gemm_ms = 0.0;" << std::endl;
+	dst << "\t#endif" << std::endl;
+	dst << "\tfor(uint32_t b = 0; b < " << batch << "; b++) {" << std::endl;
+	dst << "\t  for(uint32_t g = 0; g < " << group << "; g++) {" << std::endl;
+	dst << "\t    #ifdef ONNX2C_EXPLICIT_IM2COL_PROFILE" << std::endl;
+	dst << "\t    double onnx2c_phase_t0 = onnx2c_profile_now_ms();" << std::endl;
+	dst << "\t    #endif" << std::endl;
+	dst << "\t    memset(x_col, 0, sizeof(" << x_type << ") * (size_t)" << k_dim << " * (size_t)" << p_dim << ");" << std::endl;
+	dst << "\t    /* Materialize x_col[K][P]. */" << std::endl;
+	dst << "\t    for(uint32_t c_local = 0; c_local < " << in_ch_per_group << "; c_local++) {" << std::endl;
+	dst << "\t      uint32_t c = g * " << in_ch_per_group << " + c_local;" << std::endl;
+	dst << "\t      for(uint32_t ky = 0; ky < " << kernel_h << "; ky++) {" << std::endl;
+	dst << "\t        for(uint32_t kx = 0; kx < " << kernel_w << "; kx++) {" << std::endl;
+	dst << "\t          uint32_t k = (c_local * " << kernel_h << " + ky) * " << kernel_w << " + kx;" << std::endl;
+	dst << "\t          for(int32_t oy = 0; oy < " << out_h << "; oy++) {" << std::endl;
+	dst << "\t            for(int32_t ox = 0; ox < " << out_w << "; ox++) {" << std::endl;
+	dst << "\t              uint32_t p = (uint32_t)oy * " << out_w << " + (uint32_t)ox;" << std::endl;
+	dst << "\t              int ii0 = oy * " << stride_h << " + (int32_t)ky * " << dilation_h << " - " << pad_h << ";" << std::endl;
+	dst << "\t              int ii1 = ox * " << stride_w << " + (int32_t)kx * " << dilation_w << " - " << pad_w << ";" << std::endl;
+	dst << "\t              if(ii0 >= 0 && ii0 < " << in_h << " && ii1 >= 0 && ii1 < " << in_w << ")" << std::endl;
+	dst << "\t                x_col[(size_t)k * " << p_dim << " + p] = x[b][c][ii0][ii1];" << std::endl;
+	dst << "\t            }" << std::endl;
+	dst << "\t          }" << std::endl;
+	dst << "\t        }" << std::endl;
+	dst << "\t      }" << std::endl;
+	dst << "\t    }" << std::endl;
+	dst << "\t    #ifdef ONNX2C_EXPLICIT_IM2COL_PROFILE" << std::endl;
+	dst << "\t    onnx2c_im2col_materialize_ms += onnx2c_profile_now_ms() - onnx2c_phase_t0;" << std::endl;
+	dst << "\t    onnx2c_phase_t0 = onnx2c_profile_now_ms();" << std::endl;
+	dst << "\t    #endif" << std::endl;
+	dst << "\t    /* MatMul/GEMM: W_col[Cout/group][K] * x_col[K][P]. */" << std::endl;
+	dst << "\t    /* Loop order keeps P contiguous in the innermost loop. */" << std::endl;
+	dst << "\t    for(uint32_t m_local = 0; m_local < " << out_ch_per_group << "; m_local++) {" << std::endl;
+	dst << "\t      uint32_t m = g * " << out_ch_per_group << " + m_local;" << std::endl;
+	dst << "\t      " << y_type << "* y_plane = &y[b][m][0][0];" << std::endl;
+	dst << "\t      for(uint32_t p = 0; p < " << p_dim << "; p++) {" << std::endl;
+	dst << "\t        y_plane[p] = ";
+	if (has_bias)
+		dst << "bias[m]";
+	else
+		dst << "0";
+	dst << ";" << std::endl;
+	dst << "\t      }" << std::endl;
+	dst << "\t    }" << std::endl;
+	dst << "\t    for(uint32_t k = 0; k < " << k_dim << "; k++) {" << std::endl;
+	dst << "\t      uint32_t c_local = k / (" << kernel_h << " * " << kernel_w << ");" << std::endl;
+	dst << "\t      uint32_t rem = k % (" << kernel_h << " * " << kernel_w << ");" << std::endl;
+	dst << "\t      uint32_t ky = rem / " << kernel_w << ";" << std::endl;
+	dst << "\t      uint32_t kx = rem % " << kernel_w << ";" << std::endl;
+	dst << "\t      for(uint32_t m_local = 0; m_local < " << out_ch_per_group << "; m_local++) {" << std::endl;
+	dst << "\t        uint32_t m = g * " << out_ch_per_group << " + m_local;" << std::endl;
+	dst << "\t        " << y_type << " weight = w[m][c_local][ky][kx];" << std::endl;
+	dst << "\t        " << y_type << "* y_plane = &y[b][m][0][0];" << std::endl;
+	dst << "\t        " << x_type << "* x_row = &x_col[(size_t)k * " << p_dim << "];" << std::endl;
+	dst << "\t        for(uint32_t p = 0; p < " << p_dim << "; p++) {" << std::endl;
+	dst << "\t          y_plane[p] += weight * x_row[p];" << std::endl;
+	dst << "\t        }" << std::endl;
+	dst << "\t      }" << std::endl;
+	dst << "\t    }" << std::endl;
+	dst << "\t    #ifdef ONNX2C_EXPLICIT_IM2COL_PROFILE" << std::endl;
+	dst << "\t    onnx2c_im2col_gemm_ms += onnx2c_profile_now_ms() - onnx2c_phase_t0;" << std::endl;
+	dst << "\t    #endif" << std::endl;
+	dst << "\t  }" << std::endl;
+	dst << "\t}" << std::endl;
+	dst << "\tfree(x_col);" << std::endl;
+	dst << "\t#ifdef ONNX2C_EXPLICIT_IM2COL_PROFILE" << std::endl;
+	dst << "\tfprintf(stderr, \"explicit_im2col_profile,%s,%lld,%lld,%lld,%lld,%lld,%.9f,%.9f,0.000000000\\n\", \"" << onnx_name
+	    << "\", (long long)" << out_ch_per_group << ", (long long)" << k_dim << ", (long long)" << p_dim
+	    << ", (long long)" << workspace_bytes << ", (long long)" << (out_ch_per_group * k_dim * p_dim)
+	    << ", onnx2c_im2col_materialize_ms, onnx2c_im2col_gemm_ms);" << std::endl;
+	dst << "\t#endif" << std::endl;
 }
 
 void Im2Col::print_accumulator_init(std::ostream& dst) const
