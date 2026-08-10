@@ -128,7 +128,14 @@ void Im2Col::print_explicit_node(std::ostream& dst) const
 	    << ", P=Hout*Wout=" << p_dim << ". */" << std::endl;
 	dst << "\t/* Peak live explicit im2col workspace: " << workspace_bytes
 	    << " bytes per batch/group. */" << std::endl;
-	dst << "\t" << x_type << "* x_col = (" << x_type << "*)calloc((size_t)" << k_dim << " * (size_t)" << p_dim << ", sizeof(" << x_type << "));" << std::endl;
+	dst << "\t#ifndef ONNX2C_C_GLOBAL" << std::endl;
+	dst << "\t#ifdef __cplusplus" << std::endl;
+	dst << "\t#define ONNX2C_C_GLOBAL ::" << std::endl;
+	dst << "\t#else" << std::endl;
+	dst << "\t#define ONNX2C_C_GLOBAL" << std::endl;
+	dst << "\t#endif" << std::endl;
+	dst << "\t#endif" << std::endl;
+	dst << "\t" << x_type << "* x_col = (" << x_type << "*)ONNX2C_C_GLOBAL calloc((size_t)" << k_dim << " * (size_t)" << p_dim << ", sizeof(" << x_type << "));" << std::endl;
 	dst << "\tif (!x_col) return;" << std::endl;
 	dst << "\t#ifdef ONNX2C_EXPLICIT_IM2COL_PROFILE" << std::endl;
 	dst << "\tdouble onnx2c_im2col_materialize_ms = 0.0;" << std::endl;
@@ -139,7 +146,7 @@ void Im2Col::print_explicit_node(std::ostream& dst) const
 	dst << "\t    #ifdef ONNX2C_EXPLICIT_IM2COL_PROFILE" << std::endl;
 	dst << "\t    double onnx2c_phase_t0 = onnx2c_profile_now_ms();" << std::endl;
 	dst << "\t    #endif" << std::endl;
-	dst << "\t    memset(x_col, 0, sizeof(" << x_type << ") * (size_t)" << k_dim << " * (size_t)" << p_dim << ");" << std::endl;
+	dst << "\t    ONNX2C_C_GLOBAL memset(x_col, 0, sizeof(" << x_type << ") * (size_t)" << k_dim << " * (size_t)" << p_dim << ");" << std::endl;
 	dst << "\t    /* Materialize x_col[K][P]. */" << std::endl;
 	dst << "\t    for(uint32_t c_local = 0; c_local < " << in_ch_per_group << "; c_local++) {" << std::endl;
 	dst << "\t      uint32_t c = g * " << in_ch_per_group << " + c_local;" << std::endl;
@@ -196,9 +203,9 @@ void Im2Col::print_explicit_node(std::ostream& dst) const
 	dst << "\t    #endif" << std::endl;
 	dst << "\t  }" << std::endl;
 	dst << "\t}" << std::endl;
-	dst << "\tfree(x_col);" << std::endl;
+	dst << "\tONNX2C_C_GLOBAL free(x_col);" << std::endl;
 	dst << "\t#ifdef ONNX2C_EXPLICIT_IM2COL_PROFILE" << std::endl;
-	dst << "\tfprintf(stderr, \"explicit_im2col_profile,%s,%lld,%lld,%lld,%lld,%lld,%.9f,%.9f,0.000000000\\n\", \"" << onnx_name
+	dst << "\tONNX2C_C_GLOBAL fprintf(stderr, \"explicit_im2col_profile,%s,%lld,%lld,%lld,%lld,%lld,%.9f,%.9f,0.000000000\\n\", \"" << onnx_name
 	    << "\", (long long)" << out_ch_per_group << ", (long long)" << k_dim << ", (long long)" << p_dim
 	    << ", (long long)" << workspace_bytes << ", (long long)" << (out_ch_per_group * k_dim * p_dim)
 	    << ", onnx2c_im2col_materialize_ms, onnx2c_im2col_gemm_ms);" << std::endl;
