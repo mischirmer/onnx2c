@@ -146,7 +146,8 @@ void Im2Col::print_explicit_node(std::ostream& dst) const
 	dst << "\t    #ifdef ONNX2C_EXPLICIT_IM2COL_PROFILE" << std::endl;
 	dst << "\t    double onnx2c_phase_t0 = onnx2c_profile_now_ms();" << std::endl;
 	dst << "\t    #endif" << std::endl;
-	dst << "\t    ONNX2C_C_GLOBAL memset(x_col, 0, sizeof(" << x_type << ") * (size_t)" << k_dim << " * (size_t)" << p_dim << ");" << std::endl;
+	dst << "\t    for(size_t i = 0; i < (size_t)" << k_dim << " * (size_t)" << p_dim << "; i++)" << std::endl;
+	dst << "\t      x_col[i] = 0;" << std::endl;
 	dst << "\t    /* Materialize x_col[K][P]. */" << std::endl;
 	dst << "\t    for(uint32_t c_local = 0; c_local < " << in_ch_per_group << "; c_local++) {" << std::endl;
 	dst << "\t      uint32_t c = g * " << in_ch_per_group << " + c_local;" << std::endl;
