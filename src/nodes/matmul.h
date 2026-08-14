@@ -42,9 +42,9 @@ void MatMul::resolve(void)
 }
 
 void MatMul::print_multiply_accumulate(std::ostream& dst,
-                                              const std::string& y_idx,
-                                              const std::string& a_idx,
-                                              const std::string& b_idx) const
+                                       const std::string& y_idx,
+                                       const std::string& a_idx,
+                                       const std::string& b_idx) const
 {
 	INDT_4 << y_idx << " += " << a_idx << " * " << b_idx << ";" << std::endl;
 }
