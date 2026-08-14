@@ -35,7 +35,7 @@ class AbstractMatMul : public Node {
 	std::vector<int> resolve_shape() const;
 };
 
-inline std::vector<int> AbstractMatMul::resolve_shape() const
+std::vector<int> AbstractMatMul::resolve_shape() const
 {
 	Tensor* a = get_a();
 	Tensor* b = get_b();
@@ -79,7 +79,7 @@ inline std::vector<int> AbstractMatMul::resolve_shape() const
 	return y_dim;
 };
 
-inline void AbstractMatMul::print(std::ostream& dst) const
+void AbstractMatMul::print(std::ostream& dst) const
 {
 	INDT_1 << "/* " << op_name << " (AbstractMatMul) */" << std::endl;
 

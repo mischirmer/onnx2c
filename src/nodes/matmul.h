@@ -23,7 +23,7 @@ class MatMul : public AbstractMatMul {
 	                               const std::string& b_idx) const override;
 };
 
-inline void MatMul::resolve(void)
+void MatMul::resolve(void)
 {
 	Tensor* a = get_input_tensor(0);
 	Tensor* b = get_input_tensor(1);
@@ -41,7 +41,7 @@ inline void MatMul::resolve(void)
 	register_output(y, "Y");
 }
 
-inline void MatMul::print_multiply_accumulate(std::ostream& dst,
+void MatMul::print_multiply_accumulate(std::ostream& dst,
                                               const std::string& y_idx,
                                               const std::string& a_idx,
                                               const std::string& b_idx) const
