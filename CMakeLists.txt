@@ -36,14 +36,12 @@ add_library(onnx2c_lib STATIC
     src/optimization_passes/unionize_tensors.cpp
     src/optimization_passes/im2col.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/onnx.pb.cc
-    src/nodes/abstractmatmul.cc
     src/nodes/cast.cc
     src/nodes/constantofshape.cc
     src/nodes/convtranspose.cc
     src/nodes/expand.cc
     src/nodes/instancenorm.cc
     src/nodes/lstm.cc
-    src/nodes/matmul.cc
     src/nodes/im2col.cc
     src/nodes/pad.cc
     src/nodes/reduce.cc
