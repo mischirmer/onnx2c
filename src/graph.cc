@@ -6,7 +6,9 @@
 #include "options.h"
 
 #include "aixlog.hpp"
+#include <iomanip>
 #include <iostream>
+#include <map>
 
 using namespace toC;
 
@@ -19,6 +21,154 @@ Graph::Graph(
 {
 
 	processGraph(onnx_model, ext_inputs);
+}
+
+
+void Graph::clear_tensor_memory_assignments(void)
+{
+	tensor_unions.clear();
+	tensor_arena_plan = ArenaPlan();
+	tensor_memory_metrics = TensorArenaMetrics();
+	tensor_arena_enabled = false;
+	for (Tensor* tensor : tensors)
+		tensor->clear_storage();
+}
+
+void Graph::assign_tensor_memory_none(void)
+{
+	clear_tensor_memory_assignments();
+	std::vector<TensorLifetime> lifetimes = analyze_tensor_lifetimes();
+	tensor_memory_metrics.eligible_tensor_count = lifetimes.size();
+	for (const TensorLifetime& lifetime : lifetimes)
+		tensor_memory_metrics.total_intermediate_bytes += lifetime.size_bytes;
+	tensor_memory_metrics.peak_live_lower_bound = compute_peak_live_bytes(lifetimes);
+	log_tensor_arena_metrics();
+}
+
+void Graph::assign_tensor_memory_union(void)
+{
+	unionize_tensors();
+	std::vector<TensorLifetime> lifetimes = analyze_tensor_lifetimes();
+	ArenaPlan baseline = build_union_baseline_arena_plan(lifetimes);
+	tensor_memory_metrics = TensorArenaMetrics();
+	tensor_memory_metrics.eligible_tensor_count = lifetimes.size();
+	for (const TensorLifetime& lifetime : lifetimes)
+		tensor_memory_metrics.total_intermediate_bytes += lifetime.size_bytes;
+	tensor_memory_metrics.peak_live_lower_bound = compute_peak_live_bytes(lifetimes);
+	tensor_memory_metrics.union_baseline_bytes = baseline.arena_size;
+	log_tensor_arena_metrics();
+}
+
+std::vector<TensorLifetime> Graph::analyze_tensor_lifetimes(void) const
+{
+	return toC::analyze_tensor_lifetimes(nodes, tensors);
+}
+
+ArenaPlan Graph::build_union_baseline_arena_plan(const std::vector<TensorLifetime>& lifetimes) const
+{
+	struct UnionSlot {
+		size_t size = 0;
+		size_t alignment = 1;
+	};
+	std::map<int32_t, UnionSlot> slots;
+	for (const TensorLifetime& lifetime : lifetimes) {
+		if (lifetime.tensor->union_no < 0)
+			ERROR("arena baseline requested for tensor without union assignment: " << lifetime.tensor->name);
+		UnionSlot& slot = slots[lifetime.tensor->union_no];
+		slot.size = std::max(slot.size, lifetime.size_bytes);
+		slot.alignment = std::max(slot.alignment, lifetime.alignment);
+	}
+
+	std::map<int32_t, size_t> slot_offsets;
+	size_t arena_size = 0;
+	for (const auto& [union_no, slot] : slots) {
+		arena_size = align_up(arena_size, slot.alignment);
+		slot_offsets[union_no] = arena_size;
+		if (slot.size > SIZE_MAX - arena_size)
+			ERROR("union baseline arena size overflow");
+		arena_size += slot.size;
+	}
+
+	ArenaPlan plan;
+	plan.arena_size = arena_size;
+	for (const TensorLifetime& lifetime : lifetimes) {
+		ArenaAllocation allocation;
+		allocation.tensor = lifetime.tensor;
+		allocation.offset = slot_offsets.at(lifetime.tensor->union_no);
+		allocation.size = lifetime.size_bytes;
+		allocation.alignment = lifetime.alignment;
+		allocation.first_use = lifetime.first_use;
+		allocation.last_use = lifetime.last_use;
+		plan.allocations.push_back(allocation);
+	}
+	return plan;
+}
+
+void Graph::log_tensor_arena_metrics(void) const
+{
+	LOG(INFO) << "Tensor arena planner:" << std::endl;
+	LOG(INFO) << "  eligible tensors:          " << tensor_memory_metrics.eligible_tensor_count << std::endl;
+	LOG(INFO) << "  total intermediate bytes:  " << tensor_memory_metrics.total_intermediate_bytes << std::endl;
+	LOG(INFO) << "  peak-live lower bound:     " << tensor_memory_metrics.peak_live_lower_bound << std::endl;
+	LOG(INFO) << "  union baseline bytes:      " << tensor_memory_metrics.union_baseline_bytes << std::endl;
+	LOG(INFO) << "  arena bytes:               " << tensor_memory_metrics.arena_bytes << std::endl;
+	if (tensor_memory_metrics.union_baseline_bytes > 0) {
+		double savings = 100.0 * static_cast<double>(tensor_memory_metrics.union_baseline_bytes - tensor_memory_metrics.arena_bytes) / static_cast<double>(tensor_memory_metrics.union_baseline_bytes);
+		LOG(INFO) << "  savings vs union:          " << std::fixed << std::setprecision(2) << savings << "%" << std::endl;
+	}
+	if (tensor_memory_metrics.peak_live_lower_bound > 0) {
+		double gap = 100.0 * static_cast<double>(tensor_memory_metrics.arena_bytes - tensor_memory_metrics.peak_live_lower_bound) / static_cast<double>(tensor_memory_metrics.peak_live_lower_bound);
+		LOG(INFO) << "  gap to lower bound:        " << std::fixed << std::setprecision(2) << gap << "%" << std::endl;
+	}
+}
+
+void Graph::assign_tensor_memory_arena(void)
+{
+	clear_tensor_memory_assignments();
+	std::vector<TensorLifetime> lifetimes = analyze_tensor_lifetimes();
+	tensor_memory_metrics.eligible_tensor_count = lifetimes.size();
+	for (const TensorLifetime& lifetime : lifetimes) {
+		if (lifetime.size_bytes > SIZE_MAX - tensor_memory_metrics.total_intermediate_bytes)
+			ERROR("tensor intermediate byte sum overflow");
+		tensor_memory_metrics.total_intermediate_bytes += lifetime.size_bytes;
+	}
+	tensor_memory_metrics.peak_live_lower_bound = compute_peak_live_bytes(lifetimes);
+	if (lifetimes.empty()) {
+		log_tensor_arena_metrics();
+		return;
+	}
+
+	unionize_tensors();
+	ArenaPlan union_plan = build_union_baseline_arena_plan(lifetimes);
+	std::string validation_error;
+	if (!validate_arena_plan(union_plan, lifetimes, &validation_error))
+		ERROR("invalid union baseline arena plan: " << validation_error);
+
+	TensorArenaPlanner planner;
+	ArenaPlan planner_plan = planner.plan(lifetimes);
+	if (!validate_arena_plan(planner_plan, lifetimes, &validation_error))
+		ERROR("invalid tensor arena plan: " << validation_error);
+
+	tensor_memory_metrics.union_baseline_bytes = union_plan.arena_size;
+	const ArenaPlan* selected_plan = &planner_plan;
+	if (union_plan.arena_size < planner_plan.arena_size)
+		selected_plan = &union_plan;
+
+	clear_tensor_memory_assignments();
+	tensor_arena_plan = *selected_plan;
+	tensor_arena_enabled = true;
+	for (const ArenaAllocation& allocation : tensor_arena_plan.allocations)
+		allocation.tensor->assign_arena(allocation.offset, allocation.size, allocation.alignment);
+	tensor_memory_metrics.eligible_tensor_count = lifetimes.size();
+	for (const TensorLifetime& lifetime : lifetimes) {
+		if (lifetime.size_bytes > SIZE_MAX - tensor_memory_metrics.total_intermediate_bytes)
+			ERROR("tensor intermediate byte sum overflow");
+		tensor_memory_metrics.total_intermediate_bytes += lifetime.size_bytes;
+	}
+	tensor_memory_metrics.peak_live_lower_bound = compute_peak_live_bytes(lifetimes);
+	tensor_memory_metrics.union_baseline_bytes = union_plan.arena_size;
+	tensor_memory_metrics.arena_bytes = tensor_arena_plan.arena_size;
+	log_tensor_arena_metrics();
 }
 
 void Graph::processGraph(
@@ -348,6 +498,7 @@ bool Graph::tryResolveNode(onnx::NodeProto& onnx_node)
 			onnx_name = n->c_name() + "_recursive_" + std::to_string(o);
 		}
 		t->name = onnx_name;
+		t->producer = n;
 
 		addTensor(t);
 	}

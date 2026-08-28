@@ -117,6 +117,23 @@ void store_optimization_passes(const std::string& opt)
 	LOG(TRACE) << "That was all optimizations" << std::endl;
 }
 
+void store_tensor_memory_strategy(const std::string& opt)
+{
+	if (opt == "union") {
+		options.tensor_memory = tensor_memory_strategy::union_mode;
+		return;
+	}
+	if (opt == "arena") {
+		options.tensor_memory = tensor_memory_strategy::arena_mode;
+		return;
+	}
+	if (opt == "none") {
+		options.tensor_memory = tensor_memory_strategy::none_mode;
+		return;
+	}
+	ERROR("bad command line argument for '--tensor-memory': " << opt);
+}
+
 void parse_cmdline_options(int argc, const char* argv[])
 {
 	args::ArgumentParser parser("Generate C code from an ONNX graph file.");
@@ -128,6 +145,7 @@ void parse_cmdline_options(int argc, const char* argv[])
 	args::ValueFlag<int> loglevel(parser, "level", "Logging verbosity. 0(none)-4(all)", {'l', "log"});
 	args::ValueFlag<int> precision(parser, "digits", "Floating-point output precision (default: 20)", {'P', "precision"});
 	args::ValueFlag<std::string> optimizations(parser, "opt[,opt]...", "Specify optimization passes to run. ('help' to list available)", {'p', "optimizations"});
+	args::ValueFlag<std::string> tensorMemory(parser, "strategy", "Intermediate tensor memory strategy: union, arena, or none", {"tensor-memory"});
 	args::ValueFlag<std::string> funcName(parser, "func-name", "The name of the forward pass function", {'f', "func-name"});
 	args::Flag help(parser, "help", "Print this help text.", {'h', "help"});
 	args::Flag version(parser, "version", "Print onnx2c version", {'v', "version"});
@@ -185,6 +203,9 @@ void parse_cmdline_options(int argc, const char* argv[])
 	}
 	if (optimizations) {
 		store_optimization_passes(args::get(optimizations));
+	}
+	if (tensorMemory) {
+		store_tensor_memory_strategy(args::get(tensorMemory));
 	}
 	if (input) {
 		options.input_file = args::get(input);

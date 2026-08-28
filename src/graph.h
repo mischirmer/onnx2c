@@ -1,7 +1,9 @@
-
+#pragma once
 #include "onnx.pb.h"
 
 #include "node.h"
+#include "optimization_passes/tensor_arena_planner.h"
+#include "optimization_passes/tensor_lifetime.h"
 #include "tensor.h"
 
 /* Command line options */
@@ -23,6 +25,7 @@ class Graph {
 	/* print individual parts of the file */
 	void print_file_frontmatter(std::ostream& destination);
 	void print_global_tensors(std::ostream& destination);
+	void print_arena_storage_members(std::ostream& destination);
 	void print_tensor(const Tensor*, std::ostream& dst);
 	void print_functions(std::ostream& destination);
 	void print_includes(std::ostream& dst);
@@ -37,6 +40,15 @@ class Graph {
 	/* Optimization step: cluster the buffers of intermediate tensors into
 	 * unions. This make the memory buffers time shared. */
 	void unionize_tensors(void);
+
+	void clear_tensor_memory_assignments(void);
+	void assign_tensor_memory_none(void);
+	void assign_tensor_memory_union(void);
+	void assign_tensor_memory_arena(void);
+	std::vector<TensorLifetime> analyze_tensor_lifetimes(void) const;
+	const ArenaPlan& get_tensor_arena_plan(void) const { return tensor_arena_plan; }
+	const TensorArenaMetrics& get_tensor_memory_metrics(void) const { return tensor_memory_metrics; }
+	bool uses_tensor_arena(void) const { return tensor_arena_enabled && tensor_arena_plan.arena_size > 0; }
 
 	/* Optimization step: Fold Cast-nodes to their predecessor. */
 	void fold_casts(void);
@@ -91,6 +103,8 @@ class Graph {
 	}
 
 	Tensor* findTensor(const std::string& name) const;
+	ArenaPlan build_union_baseline_arena_plan(const std::vector<TensorLifetime>& lifetimes) const;
+	void log_tensor_arena_metrics(void) const;
 
 	// counter for naming anonymous nodes with a number
 	static int anonymous_nodes;
@@ -102,6 +116,10 @@ class Graph {
 	std::vector<Tensor*> tensor_unions;
 	uint32_t add_to_free_union(Tensor* t);
 	void mark_union_unoccupied(uint32_t);
+
+	ArenaPlan tensor_arena_plan;
+	TensorArenaMetrics tensor_memory_metrics;
+	bool tensor_arena_enabled = false;
 
 	// Print options
 	bool no_globals = false;
