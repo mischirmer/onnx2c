@@ -83,43 +83,17 @@ Call that from your main program to run inference. Function parameters are named
 Using the compiler `-ffast-math` (or equivalent) when compiling onnx2c-generated code increases computation speed.
 See the [GCC wiki on floating point maths](https://gcc.gnu.org/wiki/FloatingPointMath) for details.
 
-Tensor Arena Memory
---------------------
-
-Intermediate tensors can be placed in one statically allocated tensor arena. The arena is planned offline from inclusive tensor lifetimes, so non-overlapping tensors can reuse memory and differently sized tensors can share portions of a former union region. There is no runtime `malloc` or `free`; constants and graph I/O remain outside the arena.
-
-Select the strategy with `--tensor-memory=union|arena|none`:
-
-```sh
-onnx2c --tensor-memory=arena model.onnx > model.c
-onnx2c --tensor-memory=arena --no-globals model.onnx > model.c
-```
-
-To compare intermediate-memory strategies for one model without compiling the
-generated C, run:
-
-```sh
-python3 scripts/benchmark_tensor_memory.py model.onnx --onnx2c build/onnx2c
-```
-
-Arena mode also computes the existing union allocation as a baseline and selects the smaller valid plan, so enabling it cannot increase eligible intermediate memory. Union remains the default behavior.
-
-Representative measurements from the bundled models (GCC C99 compile, `-O2`, sizes in bytes) are:
-
-| model | eligible | total | peak lower bound | union | arena | reduction | generated C (union/arena) | codegen ms (union/arena) | compile ms (union/arena) |
-|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|
-| `conv_k2` | 3 | 228 | 164 | 164 | 164 | 0.00% | 3,518/3,854 | 10/8 | 61/59 |
-| `mnist.simplified` | 4 | 4,864 | 4,000 | 4,000 | 4,000 | 0.00% | 110,014/110,487 | 12/12 | 126/93 |
-| `squeezenet` | 105 | 33,213,568 | 11,240,864 | 14,384,608 | 11,240,864 | 21.85% | 87,557/100,214 | 215/213 | 1,962/1,124 |
-| `shufflenet` | 445 | 62,748,000 | 8,785,760 | 12,497,888 | 8,785,760 | 29.70% | 307,099/353,990 | 3,415/2,930 | 5,042/4,098 |
-| `resnet50` | 414 | 252,680,768 | 111,730,592 | 121,497,504 | 111,730,592 | 8.04% | 332,275/376,063 | 3,101/3,474 | 4,207/2,997 |
-
-Sequential models already have union allocations near their live lower bound, while branch-heavy networks expose fragmentation and partial-reuse opportunities. `--no-globals` places the same arena in the generated entry function.
 
 Onnx2c has a few optimization passes that modify the generated output:
  - Tensor unionization to wrap intermediate tensors in unions to help the compiler re-use the heap memory.
  - Removing `Cast` nodes, by modifying their predecessor node's output tensor.
  - Optimization for AVR processors to put constants into instruction memory.
+
+#### Tensor Arena Memory
+Intermediate tensors can share one statically allocated arena planned offline from their lifetimes, with no runtime allocation.
+Select `--tensor-memory=union|arena|none`; union remains the default, and arena mode falls back to the smaller valid plan.
+`--no-globals` places the arena in the generated entry function.
+Constants and graph I/O remain outside the arena.
 
 Floating-point output precision can be configured with `--precision N`.
 If omitted, onnx2c uses a precision of `20`.
