@@ -518,10 +518,10 @@ Node* Graph::createNode(const onnx::NodeProto& onnx_node)
 	if (opName == "QLinearAdd") return new QLinearElementwise("QLinearAdd");
 	if (opName == "QLinearConv") return new QLinearConv;
 	if (opName == "QGemm") return new QGemm;
+	if (opName == "QLinearAveragePool") return new QLinearAveragePool;
 	if (opName == "QLinearMatMul") return new QLinearMatMul;
 	if (opName == "QLinearMul") return new QLinearElementwise("QLinearMul");
 	if (opName == "QLinearSoftmax") return new QLinearSoftmax;
-	if (opName == "QLinearAveragePool") return new QLinearAveragePool;
 	if (opName == "QuantizeLinear") return new QuantizeLinear;
 	if (opName == "RandomUniform") return new RandomUniform;
 	if (opName == "Range") return new Range;
