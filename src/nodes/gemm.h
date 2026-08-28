@@ -7,6 +7,10 @@
  * C need not be of size A*B, but must be
  * 'unidirectionally broadcastable' to A*B.
  */
+
+#include "../options.h"
+#include <cmath>
+
 namespace toC {
 
 class Gemm : public Node {
@@ -63,6 +67,13 @@ class Gemm : public Node {
 		int K = transA ? A->data_dim[0] : A->data_dim[1]; // inner
 		int N = transB ? B->data_dim[0] : B->data_dim[1]; // column
 		std::string type = A->data_type_str();
+		const bool randomized_enabled = options.freivalds_gemm || options.gvfa_gemm;
+		const bool checksum_enabled = options.abft_gemm || options.abyzft_gemm || randomized_enabled;
+		const bool freivalds_enabled = options.freivalds_gemm;
+		const uint32_t randomized_checks = freivalds_enabled
+		    ? (options.freivalds_checks ? options.freivalds_checks : 1)
+		    : (options.gvfa_checks ? options.gvfa_checks : 1);
+		INDT_1 << "const uint32_t LAYER_ID = " << sweep_layer_id << ";" << std::endl;
 
 		// Documentation if someone is reading the code
 		dst << "\t/* Gemm */" << std::endl;
@@ -128,27 +139,127 @@ class Gemm : public Node {
 			INDT_1 << type << " (*C_)[" << C1 << "]  = (" << type << "(*)[" << C1 << "])C;" << std::endl;
 		}
 
+		if (checksum_enabled && !randomized_enabled) {
+			const bool ct = options.abft_weight_checksums_compiletime && B->isConst && B->data_buffer;
+			if (ct) {
+				INDT_1 << "/* Compile-time ABFT checksums */" << std::endl;
+				INDT_1 << "static const float b_rs_cache[" << K << "] = {" << std::endl;
+				float* bd = (float*)B->data_buffer;
+				INDT_2 << "";
+				for (int k = 0; k < K; k++) {
+					double s = 0.0;
+					for (int j = 0; j < N; j++) s += (double)(transB ? bd[j * K + k] : bd[k * N + j]);
+					if (k) dst << ", ";
+					dst << (float)s;
+				}
+				dst << "};" << std::endl;
+			} else {
+				INDT_1 << "float b_rs_cache[" << K << "];" << std::endl;
+				INDT_1 << "for( uint32_t kk2=0; kk2<" << K << "u; kk2++ ) {" << std::endl;
+				INDT_2 << "b_rs_cache[kk2] = 0.0f;" << std::endl;
+				if (transB)
+					INDT_2 << "for( uint32_t cc=0; cc<" << N << "u; cc++ ) b_rs_cache[kk2] += B[cc][kk2];" << std::endl;
+				else
+					INDT_2 << "for( uint32_t cc=0; cc<" << N << "u; cc++ ) b_rs_cache[kk2] += B[kk2][cc];" << std::endl;
+				INDT_1 << "}" << std::endl;
+			}
+		}
+
+		if (checksum_enabled && randomized_enabled) {
+			if (freivalds_enabled)
+				INDT_1 << "uint8_t r_cache[" << randomized_checks << "][" << N << "];" << std::endl;
+			else
+				INDT_1 << "float r_cache[" << randomized_checks << "][" << N << "];" << std::endl;
+			INDT_1 << "double b_rs_cache[" << randomized_checks << "][" << K << "];" << std::endl;
+			INDT_1 << "for( uint32_t chk=0; chk<" << randomized_checks << "u; chk++ ) {" << std::endl;
+			INDT_2 << "uint32_t rand_state = (uint32_t)(0x9E3779B9u ^ LAYER_ID ^ (uint32_t)(chk * 0x85EBCA6Bu));" << std::endl;
+			if (freivalds_enabled) {
+				INDT_2 << "uint32_t r_any = 0;" << std::endl;
+				INDT_2 << "for( uint32_t cc=0; cc<" << N << "u; cc++ ) { uint32_t bit = ABYZFT_randbit(&rand_state); r_cache[chk][cc] = (uint8_t)bit; r_any |= bit; }" << std::endl;
+				INDT_2 << "if( !r_any && " << N << "u>0u ) r_cache[chk][0] = 1u;" << std::endl;
+			} else {
+				INDT_2 << "for( uint32_t cc=0; cc<" << N << "u; cc++ ) r_cache[chk][cc] = ABYZFT_randn(&rand_state);" << std::endl;
+			}
+			INDT_2 << "for( uint32_t kk2=0; kk2<" << K << "u; kk2++ ) b_rs_cache[chk][kk2] = 0.0;" << std::endl;
+			INDT_2 << "for( uint32_t cc=0; cc<" << N << "u; cc++ ) {" << std::endl;
+			if (freivalds_enabled) {
+				INDT_3 << "if( !r_cache[chk][cc] ) continue;" << std::endl;
+				if (transB)
+					INDT_3 << "for( uint32_t kk2=0; kk2<" << K << "u; kk2++ ) b_rs_cache[chk][kk2] += (double)B[cc][kk2];" << std::endl;
+				else
+					INDT_3 << "for( uint32_t kk2=0; kk2<" << K << "u; kk2++ ) b_rs_cache[chk][kk2] += (double)B[kk2][cc];" << std::endl;
+			} else {
+				if (transB)
+					INDT_3 << "for( uint32_t kk2=0; kk2<" << K << "u; kk2++ ) b_rs_cache[chk][kk2] += (double)B[cc][kk2] * (double)r_cache[chk][cc];" << std::endl;
+				else
+					INDT_3 << "for( uint32_t kk2=0; kk2<" << K << "u; kk2++ ) b_rs_cache[chk][kk2] += (double)B[kk2][cc] * (double)r_cache[chk][cc];" << std::endl;
+			}
+			INDT_2 << "}" << std::endl;
+			INDT_1 << "}" << std::endl;
+		}
+
 		// Now genereate the calculation source code
+		INDT_1 << "for( uint32_t r=0; r<M; r++ ) {" << std::endl;
+		if (checksum_enabled && randomized_enabled)
+			INDT_2 << "float acc_row[" << N << "];" << std::endl;
+		if (checksum_enabled && !randomized_enabled)
+			INDT_2 << "float sumC = 0.0f;" << std::endl;
 
-		// Loop output rows, columns
-		INDT_1 << "for( uint32_t r=0; r<M; r++ )" << std::endl;
 		INDT_2 << "for( uint32_t c=0; c<N; c++ ) {" << std::endl;
-
-		/* Calculate the matrix muliplication dot inner dot product */
 		INDT_3 << type << " ABrc = 0;" << std::endl;
 		INDT_3 << "for( uint32_t i=0; i<K; i++ ) {" << std::endl;
 		INDT_4 << B->data_type_str() << " B_el = " << constant_acces_code("B" + B_idx) << ";" << std::endl;
 		INDT_4 << "ABrc += " << A_el << " * B_el;" << std::endl;
 		INDT_3 << "}" << std::endl;
 
-		/* Add scale & bias, store result in output */
+		if (checksum_enabled && randomized_enabled)
+			INDT_3 << "acc_row[c] = ABrc;" << std::endl;
+		else if (checksum_enabled)
+			INDT_3 << "sumC += ABrc;" << std::endl;
+
 		INDT_3 << type << " tmp = ABrc * alpha;" << std::endl;
-
-		if (C) {
+		if (C)
 			INDT_3 << "tmp += C_" << C_idx << " * beta;" << std::endl;
-		}
-
 		INDT_3 << "Y[r][c] = tmp;" << std::endl;
+		INDT_2 << "}" << std::endl;
+
+		if (checksum_enabled) {
+			if (randomized_enabled) {
+				if (freivalds_enabled)
+					INDT_2 << "/* Freivalds verify: r^T C_row == A_row * (B r) */" << std::endl;
+				else
+					INDT_2 << "/* GVFA verify: r^T C_row ~= A_row * (B r) */" << std::endl;
+				INDT_2 << "for( uint32_t chk=0; chk<" << randomized_checks << "u; chk++ ) {" << std::endl;
+				INDT_3 << "double sumC_rand = 0.0;" << std::endl;
+				INDT_3 << "for( uint32_t cc=0; cc<" << N << "u; cc++ ) {" << std::endl;
+				if (freivalds_enabled) {
+					INDT_4 << "if( !r_cache[chk][cc] ) continue;" << std::endl;
+					INDT_4 << "sumC_rand += (double)acc_row[cc];" << std::endl;
+				} else {
+					INDT_4 << "sumC_rand += (double)acc_row[cc] * (double)r_cache[chk][cc];" << std::endl;
+				}
+				INDT_3 << "}" << std::endl;
+				INDT_3 << "double pred = 0.0;" << std::endl;
+				if (transA)
+					INDT_3 << "for( uint32_t kk2=0; kk2<" << K << "u; kk2++ ) pred += (double)A[kk2][r] * b_rs_cache[chk][kk2];" << std::endl;
+				else
+					INDT_3 << "for( uint32_t kk2=0; kk2<" << K << "u; kk2++ ) pred += (double)A[r][kk2] * b_rs_cache[chk][kk2];" << std::endl;
+				INDT_3 << "double diff = fabs(pred - sumC_rand);" << std::endl;
+				INDT_3 << "double tol = " << options.abft_eps << " * (fabs(pred) + 1.0);" << std::endl;
+				INDT_3 << "if( diff > tol ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; break; }" << std::endl;
+				INDT_2 << "}" << std::endl;
+			} else {
+				INDT_2 << "/* ABFT verify (float domain): sum(C_row) == A_row * (B 1) */" << std::endl;
+				INDT_2 << "float pred = 0.0f;" << std::endl;
+				if (transA)
+					INDT_2 << "for( uint32_t kk2=0; kk2<" << K << "u; kk2++ ) pred += A[kk2][r] * b_rs_cache[kk2];" << std::endl;
+				else
+					INDT_2 << "for( uint32_t kk2=0; kk2<" << K << "u; kk2++ ) pred += A[r][kk2] * b_rs_cache[kk2];" << std::endl;
+				INDT_2 << "float diff = fabsf(sumC - pred);" << std::endl;
+				INDT_2 << "float tol = " << options.abft_eps << "f * (fabsf(pred) + 1.0f);" << std::endl;
+				INDT_2 << "if( diff > tol ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; }" << std::endl;
+			}
+		}
 
 		INDT_1 << "}" << std::endl;
 	}

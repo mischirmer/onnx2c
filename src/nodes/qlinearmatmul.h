@@ -170,26 +170,77 @@ class QLinearMatMul : public AbstractMatMul {
 			INDT_3 << "int64_t abyzft_scaleAB_mag = (abyzft_scaleAB < 0) ? -abyzft_scaleAB : abyzft_scaleAB;" << std::endl;
 			INDT_3 << "int32_t abyzft_scaleAB_sign = (abyzft_scaleAB < 0) ? -1 : 1;" << std::endl;
 			INDT_3 << "uint32_t abyzft_shiftAB = ABYZFT_pow2_shift_u64((uint64_t)abyzft_scaleAB_mag);" << std::endl;
-			if (use_abyzft_i32_accum)
-				INDT_3 << "int32_t acc_scaled = 0;" << std::endl;
-			else
+			// int8 -> int16 scaling -> dynamic quantization to int8 -> int8*int8 matmul
+			if (options.abyzft_int8_main_matmul) {
+				INDT_3 << "int16_t lhs_maxabs = 0;" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) {" << std::endl;
+				INDT_4 << "int16_t v = (int16_t)(((int32_t)A[r][i] - (int32_t)a_zero_point[0]) * abyzft_scaleA);" << std::endl;
+				INDT_4 << "int16_t av = (v < 0) ? -v : v;" << std::endl;
+				INDT_4 << "if( av > lhs_maxabs ) lhs_maxabs = av;" << std::endl;
+				INDT_3 << "}" << std::endl;
+				INDT_3 << "uint32_t lhs_shift = 0;" << std::endl;
+				INDT_3 << "if( lhs_maxabs > 127 ) {" << std::endl;
+				INDT_4 << "uint32_t v = (uint32_t)lhs_maxabs;" << std::endl;
+				INDT_4 << "while( (v >> lhs_shift) > 127 ) lhs_shift++;" << std::endl;
+				INDT_3 << "}" << std::endl;
+				INDT_3 << "int8_t lhs_scaled_row[" << K << "];" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) {" << std::endl;
+				INDT_4 << "int16_t v = (int16_t)(((int32_t)A[r][i] - (int32_t)a_zero_point[0]) * abyzft_scaleA);" << std::endl;
+				INDT_4 << "lhs_scaled_row[i] = (int8_t)(v >> lhs_shift);" << std::endl;
+				INDT_3 << "}" << std::endl;
+				INDT_3 << "int16_t rhs_maxabs = 0;" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) {" << std::endl;
+				if (use_compiletime_abyzft_bbase)
+					INDT_4 << "int16_t v = (int16_t)(b_base_cache[i][c] * abyzft_scaleB);" << std::endl;
+				else
+					INDT_4 << "int16_t v = (int16_t)(((int32_t)B[i][c] - (int32_t)b_zero_point[0]) * abyzft_scaleB);" << std::endl;
+				INDT_4 << "int16_t av = (v < 0) ? -v : v;" << std::endl;
+				INDT_4 << "if( av > rhs_maxabs ) rhs_maxabs = av;" << std::endl;
+				INDT_3 << "}" << std::endl;
+				INDT_3 << "uint32_t rhs_shift = 0;" << std::endl;
+				INDT_3 << "if( rhs_maxabs > 127 ) {" << std::endl;
+				INDT_4 << "uint32_t v = (uint32_t)rhs_maxabs;" << std::endl;
+				INDT_4 << "while( (v >> rhs_shift) > 127 ) rhs_shift++;" << std::endl;
+				INDT_3 << "}" << std::endl;
+				INDT_3 << "int8_t rhs_scaled_col[" << K << "];" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) {" << std::endl;
+				if (use_compiletime_abyzft_bbase)
+					INDT_4 << "int16_t v = (int16_t)(b_base_cache[i][c] * abyzft_scaleB);" << std::endl;
+				else
+					INDT_4 << "int16_t v = (int16_t)(((int32_t)B[i][c] - (int32_t)b_zero_point[0]) * abyzft_scaleB);" << std::endl;
+				INDT_4 << "rhs_scaled_col[i] = (int8_t)(v >> rhs_shift);" << std::endl;
+				INDT_3 << "}" << std::endl;
+				INDT_3 << "int32_t acc32 = 0;" << std::endl;
+				INDT_3 << "int32_t acc32_check = 0;" << std::endl;
 				INDT_3 << "int64_t acc_scaled = 0;" << std::endl;
-			INDT_3 << "int16_t lhs_scaled_row[" << K << "];" << std::endl;
-			INDT_3 << "int16_t rhs_scaled_col[" << K << "];" << std::endl;
-			INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) lhs_scaled_row[i] = (int16_t)(((int32_t)A[r][i] - (int32_t)a_zero_point[0]) * abyzft_scaleA);" << std::endl;
-			if (use_compiletime_abyzft_bbase)
-				INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) rhs_scaled_col[i] = (int16_t)(b_base_cache[i][c] * abyzft_scaleB);" << std::endl;
-			else
-				INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) rhs_scaled_col[i] = (int16_t)(((int32_t)B[i][c] - (int32_t)b_zero_point[0]) * abyzft_scaleB);" << std::endl;
-			INDT_3 << "int32_t acc32 = 0;" << std::endl;
-			INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) {" << std::endl;
-			if (use_abyzft_i32_accum)
-				INDT_4 << "acc_scaled += (int32_t)lhs_scaled_row[i] * (int32_t)rhs_scaled_col[i];" << std::endl;
-			else
+				INDT_3 << "uint32_t req_shift = lhs_shift + rhs_shift;" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) {" << std::endl;
 				INDT_4 << "acc_scaled += (int64_t)lhs_scaled_row[i] * (int64_t)rhs_scaled_col[i];" << std::endl;
-			INDT_3 << "}" << std::endl;
-			if (use_abyzft_i32_accum)
-				INDT_3 << "int64_t acc_scaled_fault = (int64_t)acc_scaled;" << std::endl;
+				INDT_4 << "acc32_check += ((int32_t)A[r][i] - (int32_t)a_zero_point[0]) * ((int32_t)B[i][c] - (int32_t)b_zero_point[0]);" << std::endl;
+				INDT_3 << "}" << std::endl;
+				INDT_3 << "int64_t acc_scaled_fault = acc_scaled;" << std::endl;
+			} else {
+				if (use_abyzft_i32_accum)
+					INDT_3 << "int32_t acc_scaled = 0;" << std::endl;
+				else
+					INDT_3 << "int64_t acc_scaled = 0;" << std::endl;
+				INDT_3 << "int16_t lhs_scaled_row[" << K << "];" << std::endl;
+				INDT_3 << "int16_t rhs_scaled_col[" << K << "];" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) lhs_scaled_row[i] = (int16_t)(((int32_t)A[r][i] - (int32_t)a_zero_point[0]) * abyzft_scaleA);" << std::endl;
+				if (use_compiletime_abyzft_bbase)
+					INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) rhs_scaled_col[i] = (int16_t)(b_base_cache[i][c] * abyzft_scaleB);" << std::endl;
+				else
+					INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) rhs_scaled_col[i] = (int16_t)(((int32_t)B[i][c] - (int32_t)b_zero_point[0]) * abyzft_scaleB);" << std::endl;
+				INDT_3 << "int32_t acc32 = 0;" << std::endl;
+				INDT_3 << "for( uint32_t i=0; i<" << K << "u; i++ ) {" << std::endl;
+				if (use_abyzft_i32_accum)
+					INDT_4 << "acc_scaled += (int32_t)lhs_scaled_row[i] * (int32_t)rhs_scaled_col[i];" << std::endl;
+				else
+					INDT_4 << "acc_scaled += (int64_t)lhs_scaled_row[i] * (int64_t)rhs_scaled_col[i];" << std::endl;
+				INDT_3 << "}" << std::endl;
+				if (use_abyzft_i32_accum)
+					INDT_3 << "int64_t acc_scaled_fault = (int64_t)acc_scaled;" << std::endl;
+			}
 		}
 		else {
 			INDT_3 << "int32_t acc32 = 0;" << std::endl;
@@ -209,9 +260,9 @@ class QLinearMatMul : public AbstractMatMul {
 		if (options.abyzft_gemm)
 			INDT_4 << "int64_t scaled_fault_delta = (int64_t)fault_delta;" << std::endl;
 		INDT_4 << "if( FAULT_MODEL==0 ) {" << std::endl;
-		if (options.abyzft_gemm)
-			INDT_5 << "if( out_idx == FAULT_INDEX ) { " << (use_abyzft_i32_accum ? "acc_scaled_fault" : "acc_scaled") << " += scaled_fault_delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
-		else
+		if (options.abyzft_gemm) {
+			INDT_5 << "if( out_idx == FAULT_INDEX ) { " << (options.abyzft_int8_main_matmul ? "acc_scaled" : (use_abyzft_i32_accum ? "acc_scaled_fault" : "acc_scaled")) << " += scaled_fault_delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; " << (options.abyzft_int8_main_matmul ? "acc32_check += fault_delta;" : "") << " }" << std::endl;
+		} else
 			INDT_5 << "if( out_idx == FAULT_INDEX ) { acc32 += fault_delta; acc32_check += fault_delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		INDT_4 << "}" << std::endl;
 		INDT_4 << "else if( FAULT_MODEL==1 ) {" << std::endl;
@@ -227,12 +278,17 @@ class QLinearMatMul : public AbstractMatMul {
 		INDT_6 << "else if( out_idx == FAULT_INDEX + P + 1u ) delta = +fault_delta;" << std::endl;
 		INDT_5 << "}" << std::endl;
 		if (options.abyzft_gemm)
-			INDT_5 << "if( delta != 0 ) { " << (use_abyzft_i32_accum ? "acc_scaled_fault" : "acc_scaled") << " += (int64_t)delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+			INDT_5 << "if( delta != 0 ) { " << (options.abyzft_int8_main_matmul ? "acc_scaled" : (use_abyzft_i32_accum ? "acc_scaled_fault" : "acc_scaled")) << " += (int64_t)delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		else
 			INDT_5 << "if( delta != 0 ) { acc32 += delta; acc32_check += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		INDT_4 << "}" << std::endl;
 			if (options.abyzft_gemm) {
-				if (use_abyzft_i32_accum)
+				if (options.abyzft_int8_main_matmul) {
+					INDT_3 << "if( abyzft_scaleAB_mag != 0 ) {" << std::endl;
+					INDT_4 << "if( abyzft_shiftAB >= req_shift ) acc32 = abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled_fault, abyzft_shiftAB - req_shift);" << std::endl;
+					INDT_4 << "else acc32 = abyzft_scaleAB_sign * (int32_t)(acc_scaled_fault << (req_shift - abyzft_shiftAB));" << std::endl;
+					INDT_3 << "}" << std::endl;
+				} else if (use_abyzft_i32_accum)
 					INDT_3 << "if( abyzft_scaleAB_mag != 0 ) acc32 = abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled_fault, abyzft_shiftAB);" << std::endl;
 				else
 					INDT_3 << "if( abyzft_scaleAB_mag != 0 ) acc32 = (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, abyzft_shiftAB));" << std::endl;
@@ -252,13 +308,17 @@ class QLinearMatMul : public AbstractMatMul {
 		INDT_6 << "else if( out_idx == base + P + 1u ) delta += +fault_delta;" << std::endl;
 		INDT_5 << "}" << std::endl;
 		if (options.abyzft_gemm)
-			INDT_5 << "if( delta != 0 ) { " << (use_abyzft_i32_accum ? "acc_scaled_fault" : "acc_scaled") << " += (int64_t)delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+			INDT_5 << "if( delta != 0 ) { " << (options.abyzft_int8_main_matmul ? "acc_scaled" : (use_abyzft_i32_accum ? "acc_scaled_fault" : "acc_scaled")) << " += (int64_t)delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; " << (options.abyzft_int8_main_matmul ? "acc32_check += delta;" : "") << " }" << std::endl;
 		else
 			INDT_5 << "if( delta != 0 ) { acc32 += delta; acc32_check += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		INDT_4 << "}" << std::endl;
-		INDT_3 << "}" << std::endl;
 			if (options.abyzft_gemm) {
-				if (use_abyzft_i32_accum)
+				if (options.abyzft_int8_main_matmul) {
+					INDT_3 << "if( abyzft_scaleAB_mag != 0 ) {" << std::endl;
+					INDT_4 << "if( abyzft_shiftAB >= req_shift ) acc32 = abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled_fault, abyzft_shiftAB - req_shift);" << std::endl;
+					INDT_4 << "else acc32 = abyzft_scaleAB_sign * (int32_t)(acc_scaled_fault << (req_shift - abyzft_shiftAB));" << std::endl;
+					INDT_3 << "}" << std::endl;
+				} else if (use_abyzft_i32_accum)
 					INDT_3 << "if( abyzft_scaleAB_mag != 0 ) acc32 = abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled_fault, abyzft_shiftAB);" << std::endl;
 				else
 					INDT_3 << "if( abyzft_scaleAB_mag != 0 ) acc32 = (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, abyzft_shiftAB));" << std::endl;
@@ -266,7 +326,7 @@ class QLinearMatMul : public AbstractMatMul {
 
 		if (checksum_enabled) {
 			if (options.abyzft_gemm) {
-				INDT_3 << "acc_row[c] = acc32;" << std::endl;
+				INDT_3 << "acc_row[c] = " << (options.abyzft_int8_main_matmul ? "acc32_check" : "acc32") << ";" << std::endl;
 			}
 			else {
 				INDT_3 << "acc_row[c] = acc32_check;" << std::endl;

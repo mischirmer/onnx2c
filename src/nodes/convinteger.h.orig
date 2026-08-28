@@ -398,137 +398,48 @@ class ConvInteger : public SpatialFilter {
 			INDT_5 << "int32_t abyzft_scaleA = (int32_t)" << scale_picker << "(&abyzft_state);" << std::endl;
 			INDT_5 << "int32_t abyzft_scaleB[" << mtile << "];" << std::endl;
 			INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) abyzft_scaleB[mi] = (int32_t)" << scale_picker << "(&abyzft_state);" << std::endl;
-			// int8 -> int16 scaling -> dynamic quantization to int8 -> int8*int8 matmul
-			if (options.abyzft_int8_main_matmul) {
-				INDT_5 << "int8_t col_scaled[" << K << "];" << std::endl;
-				INDT_5 << "int16_t col_maxabs = 0;" << std::endl;
-				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) {" << std::endl;
-				INDT_6 << "int16_t v = (int16_t)(col[kk2] * abyzft_scaleA);" << std::endl;
-				INDT_6 << "int16_t av = (v < 0) ? -v : v;" << std::endl;
-				INDT_6 << "if( av > col_maxabs ) col_maxabs = av;" << std::endl;
-				INDT_5 << "}" << std::endl;
-				INDT_5 << "uint32_t col_shift = 0;" << std::endl;
-				INDT_5 << "if( col_maxabs > 127 ) {" << std::endl;
-				INDT_6 << "uint32_t v = (uint32_t)col_maxabs;" << std::endl;
-				INDT_6 << "while( (v >> col_shift) > 127 ) col_shift++;" << std::endl;
-				INDT_5 << "}" << std::endl;
-				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) {" << std::endl;
-				INDT_6 << "int16_t v = (int16_t)(col[kk2] * abyzft_scaleA);" << std::endl;
-				INDT_6 << "col_scaled[kk2] = (int8_t)(v >> col_shift);" << std::endl;
-				INDT_5 << "}" << std::endl;
-				if (use_compiletime_abyzft_wbase) {
-					INDT_5 << "static const int8_t w_base_cache[" << maps << "][" << K << "] = {" << std::endl;
-					for (uint32_t m = 0; m < maps; m++) {
-						INDT_6 << "{";
-						uint32_t kk2 = 0;
-						for (uint32_t c0 = 0; c0 < gi; c0++) {
-							for (int32_t kk0 = 0; kk0 < k0; kk0++) {
-								for (int32_t kk1 = 0; kk1 < k1; kk1++) {
-									uint64_t widx = (((uint64_t)m * gi + c0) * k0 + kk0) * k1 + kk1;
-									if (kk2++ > 0) dst << ", ";
-									dst << static_cast<int8_t>(get_tensor_elem_i32(get_W(), widx) - w_zp_const);
-								}
+			INDT_5 << "int16_t col_scaled[" << K << "];" << std::endl;
+			INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) col_scaled[kk2] = (int16_t)(col[kk2] * abyzft_scaleA);" << std::endl;
+			if (use_compiletime_abyzft_wbase) {
+				INDT_5 << "static const int16_t w_base_cache[" << maps << "][" << K << "] = {" << std::endl;
+				for (uint32_t m = 0; m < maps; m++) {
+					INDT_6 << "{";
+					uint32_t kk2 = 0;
+					for (uint32_t c0 = 0; c0 < gi; c0++) {
+						for (int32_t kk0 = 0; kk0 < k0; kk0++) {
+							for (int32_t kk1 = 0; kk1 < k1; kk1++) {
+								uint64_t widx = (((uint64_t)m * gi + c0) * k0 + kk0) * k1 + kk1;
+								if (kk2++ > 0) dst << ", ";
+								dst << static_cast<int16_t>(get_tensor_elem_i32(get_W(), widx) - w_zp_const);
 							}
 						}
-						dst << "}";
-						if (m + 1 < maps) dst << ",";
-						dst << std::endl;
 					}
-					INDT_5 << "};" << std::endl;
+					dst << "}";
+					if (m + 1 < maps) dst << ",";
+					dst << std::endl;
 				}
-				INDT_5 << "uint32_t w_shift[" << mtile << "];" << std::endl;
-				INDT_5 << "int8_t w_scaled_tile[" << mtile << "][" << K << "];" << std::endl;
-				INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) {" << std::endl;
-				INDT_6 << "uint32_t m_scaled = m0 + mi;" << std::endl;
-				INDT_6 << "int32_t scaleB = abyzft_scaleB[mi];" << std::endl;
-				INDT_6 << "int16_t w_maxabs = 0;" << std::endl;
-				if (use_compiletime_abyzft_wbase) {
-					INDT_6 << "const int8_t* w_base = w_base_cache[m_scaled];" << std::endl;
-					INDT_6 << "for( uint32_t kk2=0; kk2<K; kk2++ ) {" << std::endl;
-					INDT_6 << "int16_t v = (int16_t)((int32_t)w_base[kk2] * scaleB);" << std::endl;
-					INDT_6 << "int16_t av = (v < 0) ? -v : v;" << std::endl;
-					INDT_6 << "if( av > w_maxabs ) w_maxabs = av;" << std::endl;
-					INDT_6 << "}" << std::endl;
-				}
-				else {
-					INDT_6 << "uint32_t kk2 = 0;" << std::endl;
-					INDT_6 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
-					INDT_6 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
-					INDT_6 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
-					INDT_6 << "int32_t wq = (((int32_t)w[m_scaled][c0][kk0][kk1]) - w_zp);" << std::endl;
-					INDT_6 << "int16_t v = (int16_t)(wq * scaleB);" << std::endl;
-					INDT_6 << "int16_t av = (v < 0) ? -v : v;" << std::endl;
-					INDT_6 << "if( av > w_maxabs ) w_maxabs = av;" << std::endl;
-					INDT_6 << "kk2++;" << std::endl;
-					INDT_6 << "}" << std::endl;
-					INDT_6 << "}" << std::endl;
-					INDT_6 << "}" << std::endl;
-				}
-				INDT_6 << "uint32_t ws = 0;" << std::endl;
-				INDT_6 << "if( w_maxabs > 127 ) {" << std::endl;
-				INDT_6 << "uint32_t v = (uint32_t)w_maxabs;" << std::endl;
-				INDT_6 << "while( (v >> ws) > 127 ) ws++;" << std::endl;
-				INDT_6 << "}" << std::endl;
-				INDT_6 << "w_shift[mi] = ws;" << std::endl;
-				if (use_compiletime_abyzft_wbase) {
-					INDT_6 << "for( uint32_t kk2=0; kk2<K; kk2++ ) w_scaled_tile[mi][kk2] = (int8_t)((int32_t)w_base[kk2] * scaleB >> ws);" << std::endl;
-				}
-				else {
-					INDT_6 << "uint32_t kk2 = 0;" << std::endl;
-					INDT_6 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
-					INDT_6 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
-					INDT_6 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
-					INDT_6 << "int32_t wq = (((int32_t)w[m_scaled][c0][kk0][kk1]) - w_zp);" << std::endl;
-					INDT_6 << "w_scaled_tile[mi][kk2++] = (int8_t)(wq * scaleB >> ws);" << std::endl;
-					INDT_6 << "}" << std::endl;
-					INDT_6 << "}" << std::endl;
-					INDT_6 << "}" << std::endl;
-				}
-				INDT_5 << "}" << std::endl;
-			} else {
-				INDT_5 << "int16_t col_scaled[" << K << "];" << std::endl;
-				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) col_scaled[kk2] = (int16_t)(col[kk2] * abyzft_scaleA);" << std::endl;
-				if (use_compiletime_abyzft_wbase) {
-					INDT_5 << "static const int16_t w_base_cache[" << maps << "][" << K << "] = {" << std::endl;
-					for (uint32_t m = 0; m < maps; m++) {
-						INDT_6 << "{";
-						uint32_t kk2 = 0;
-						for (uint32_t c0 = 0; c0 < gi; c0++) {
-							for (int32_t kk0 = 0; kk0 < k0; kk0++) {
-								for (int32_t kk1 = 0; kk1 < k1; kk1++) {
-									uint64_t widx = (((uint64_t)m * gi + c0) * k0 + kk0) * k1 + kk1;
-									if (kk2++ > 0) dst << ", ";
-									dst << static_cast<int16_t>(get_tensor_elem_i32(get_W(), widx) - w_zp_const);
-								}
-							}
-						}
-						dst << "}";
-						if (m + 1 < maps) dst << ",";
-						dst << std::endl;
-					}
-					INDT_5 << "};" << std::endl;
-				}
-				INDT_5 << "int16_t w_scaled_tile[" << mtile << "][" << K << "];" << std::endl;
-				INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) {" << std::endl;
-				INDT_6 << "uint32_t m_scaled = m0 + mi;" << std::endl;
-				INDT_6 << "int32_t scaleB = abyzft_scaleB[mi];" << std::endl;
-				if (use_compiletime_abyzft_wbase) {
-					INDT_6 << "const int16_t* w_base = w_base_cache[m_scaled];" << std::endl;
-					INDT_6 << "for( uint32_t kk2=0; kk2<K; kk2++ ) w_scaled_tile[mi][kk2] = (int16_t)(w_base[kk2] * scaleB);" << std::endl;
-				}
-				else {
-					INDT_6 << "uint32_t kk2 = 0;" << std::endl;
-					INDT_6 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
-					INDT_6 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
-					INDT_6 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
-					INDT_6 << "int32_t wq = (((int32_t)w[m_scaled][c0][kk0][kk1]) - w_zp);" << std::endl;
-					INDT_6 << "w_scaled_tile[mi][kk2++] = (int16_t)(wq * scaleB);" << std::endl;
-					INDT_6 << "}" << std::endl;
-					INDT_6 << "}" << std::endl;
-					INDT_6 << "}" << std::endl;
-				}
-				INDT_5 << "}" << std::endl;
+				INDT_5 << "};" << std::endl;
 			}
+			INDT_5 << "int16_t w_scaled_tile[" << mtile << "][" << K << "];" << std::endl;
+			INDT_5 << "for( uint32_t mi=0; mi<(m1-m0); mi++ ) {" << std::endl;
+			INDT_6 << "uint32_t m_scaled = m0 + mi;" << std::endl;
+			INDT_6 << "int32_t scaleB = abyzft_scaleB[mi];" << std::endl;
+			if (use_compiletime_abyzft_wbase) {
+				INDT_6 << "const int16_t* w_base = w_base_cache[m_scaled];" << std::endl;
+				INDT_6 << "for( uint32_t kk2=0; kk2<K; kk2++ ) w_scaled_tile[mi][kk2] = (int16_t)(w_base[kk2] * scaleB);" << std::endl;
+			}
+			else {
+				INDT_6 << "uint32_t kk2 = 0;" << std::endl;
+				INDT_6 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
+				INDT_6 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
+				INDT_6 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
+				INDT_6 << "int32_t wq = (((int32_t)w[m_scaled][c0][kk0][kk1]) - w_zp);" << std::endl;
+				INDT_6 << "w_scaled_tile[mi][kk2++] = (int16_t)(wq * scaleB);" << std::endl;
+				INDT_6 << "}" << std::endl;
+				INDT_6 << "}" << std::endl;
+				INDT_6 << "}" << std::endl;
+			}
+			INDT_5 << "}" << std::endl;
 		}
 
 		if (checksum_enabled) {
@@ -549,36 +460,17 @@ class ConvInteger : public SpatialFilter {
 			INDT_5 << "int64_t abyzft_scaleAB_mag = (abyzft_scaleAB < 0) ? -abyzft_scaleAB : abyzft_scaleAB;" << std::endl;
 			INDT_5 << "int32_t abyzft_scaleAB_sign = (abyzft_scaleAB < 0) ? -1 : 1;" << std::endl;
 			INDT_5 << "uint32_t abyzft_shiftAB = ABYZFT_pow2_shift_u64((uint64_t)abyzft_scaleAB_mag);" << std::endl;
-			// int8 -> int16 scaling -> int8 requantized operand -> int8*int8 matmul
-				if (options.abyzft_int8_main_matmul) {
+			INDT_5 << "int64_t acc_scaled = 0;" << std::endl;
+			if (get_number_of_inputs() < 9)
 				INDT_5 << "int32_t acc32 = 0;" << std::endl;
-				INDT_5 << "int32_t acc32_check = 0;" << std::endl;
-				INDT_5 << "int64_t acc_scaled = 0;" << std::endl;
-				INDT_5 << "uint32_t req_shift = col_shift + w_shift[m - m0];" << std::endl;
-				INDT_5 << "const int8_t* w_scaled = w_scaled_tile[m - m0];" << std::endl;
-				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) acc_scaled += (int64_t)col_scaled[kk2] * (int64_t)w_scaled[kk2];" << std::endl;
-				INDT_5 << "uint32_t kk2_check = 0;" << std::endl;
-				INDT_5 << "for( uint32_t c0=0; c0<" << gi << "; c0++ ) {" << std::endl;
-				INDT_5 << "for( int32_t kk0=0; kk0<" << k0 << "; kk0++ ) {" << std::endl;
-				INDT_5 << "for( int32_t kk1=0; kk1<" << k1 << "; kk1++ ) {" << std::endl;
-				INDT_6 << "acc32_check += col[kk2_check++] * (((int32_t)w[m][c0][kk0][kk1]) - w_zp);" << std::endl;
-				INDT_5 << "}" << std::endl;
-				INDT_5 << "}" << std::endl;
-				INDT_5 << "}" << std::endl;
-				INDT_5 << "int64_t acc_scaled_fault = acc_scaled;" << std::endl;
-			} else {
-				INDT_5 << "int64_t acc_scaled = 0;" << std::endl;
-				if (get_number_of_inputs() < 9)
-					INDT_5 << "int32_t acc32 = 0;" << std::endl;
-				else
-					INDT_5 << "int32_t acc32 = bias[m];" << std::endl;
-				INDT_5 << "const int16_t* w_scaled = w_scaled_tile[m - m0];" << std::endl;
-				INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) acc_scaled += (int64_t)col_scaled[kk2] * (int64_t)w_scaled[kk2];" << std::endl;
-				if (get_number_of_inputs() < 9)
-					INDT_5 << "acc32 = (abyzft_scaleAB_mag != 0) ? (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, abyzft_shiftAB)) : 0;" << std::endl;
-				else
-					INDT_5 << "acc32 += (abyzft_scaleAB_mag != 0) ? (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, abyzft_shiftAB)) : 0;" << std::endl;
-			}
+			else
+				INDT_5 << "int32_t acc32 = bias[m];" << std::endl;
+			INDT_5 << "const int16_t* w_scaled = w_scaled_tile[m - m0];" << std::endl;
+			INDT_5 << "for( uint32_t kk2=0; kk2<K; kk2++ ) acc_scaled += (int64_t)col_scaled[kk2] * (int64_t)w_scaled[kk2];" << std::endl;
+			if (get_number_of_inputs() < 9)
+				INDT_5 << "acc32 = (abyzft_scaleAB_mag != 0) ? (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, abyzft_shiftAB)) : 0;" << std::endl;
+			else
+				INDT_5 << "acc32 += (abyzft_scaleAB_mag != 0) ? (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, abyzft_shiftAB)) : 0;" << std::endl;
 		}
 		else {
 			INDT_5 << "int32_t acc32 = 0;" << std::endl;
@@ -600,7 +492,7 @@ class ConvInteger : public SpatialFilter {
 			INDT_5 << "int64_t scaled_fault_delta = (int64_t)fault_delta;" << std::endl;
 		INDT_5 << "if( FAULT_MODEL==0 ) {" << std::endl;
 		if (options.abyzft_gemm)
-			INDT_5 << "if( out_idx == FAULT_INDEX ) { " << (options.abyzft_int8_main_matmul ? "acc_scaled_fault" : "acc_scaled") << " += scaled_fault_delta; " << (options.abyzft_int8_main_matmul ? "acc32_check += fault_delta; " : "acc32 = (abyzft_scaleAB_mag != 0) ? (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, abyzft_shiftAB)) : acc32; ") << "FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+			INDT_5 << "if( out_idx == FAULT_INDEX ) { acc_scaled += scaled_fault_delta; acc32 = (abyzft_scaleAB_mag != 0) ? (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, abyzft_shiftAB)) : acc32; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		else
 			INDT_5 << "if( out_idx == FAULT_INDEX ) { acc32 += fault_delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		INDT_5 << "} else if( FAULT_MODEL==1 ) {" << std::endl;
@@ -633,7 +525,7 @@ class ConvInteger : public SpatialFilter {
 			INDT_5 << "}" << std::endl;
 		}
 		if (options.abyzft_gemm)
-			INDT_5 << "if( delta != 0 ) { " << (options.abyzft_int8_main_matmul ? "acc_scaled_fault" : "acc_scaled") << " += (int64_t)delta; " << (options.abyzft_int8_main_matmul ? "acc32_check += delta; " : "acc32 = (abyzft_scaleAB_mag != 0) ? (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, abyzft_shiftAB)) : acc32; ") << "FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+			INDT_5 << "if( delta != 0 ) { acc_scaled += (int64_t)delta; acc32 = (abyzft_scaleAB_mag != 0) ? (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, abyzft_shiftAB)) : acc32; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		else
 			INDT_5 << "if( delta != 0 ) { acc32 += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		INDT_5 << "} else if( FAULT_MODEL==2 ) {" << std::endl;
@@ -667,26 +559,14 @@ class ConvInteger : public SpatialFilter {
 		}
 		INDT_5 << "}" << std::endl;
 		if (options.abyzft_gemm)
-			INDT_5 << "if( delta != 0 ) { " << (options.abyzft_int8_main_matmul ? "acc_scaled_fault" : "acc_scaled") << " += (int64_t)delta; " << (options.abyzft_int8_main_matmul ? "acc32_check += delta; " : "acc32 = (abyzft_scaleAB_mag != 0) ? (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, abyzft_shiftAB)) : acc32; ") << "FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
+			INDT_5 << "if( delta != 0 ) { acc_scaled += (int64_t)delta; acc32 = (abyzft_scaleAB_mag != 0) ? (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, abyzft_shiftAB)) : acc32; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		else
 			INDT_5 << "if( delta != 0 ) { acc32 += delta; FAULT_INJECTED = true; FAULT_INJECTIONS++; }" << std::endl;
 		INDT_5 << "}" << std::endl;
 		INDT_5 << "}" << std::endl;
 
-		if (options.abyzft_gemm && options.abyzft_int8_main_matmul) {
-			INDT_5 << "if( abyzft_scaleAB_mag != 0 ) {" << std::endl;
-			INDT_5 << "if( abyzft_shiftAB >= req_shift ) {" << std::endl;
-			INDT_5 << "acc32 = (int32_t)(abyzft_scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled_fault, abyzft_shiftAB - req_shift));" << std::endl;
-			INDT_5 << "} else {" << std::endl;
-			INDT_5 << "acc32 = (int32_t)(abyzft_scaleAB_sign * (acc_scaled_fault << (req_shift - abyzft_shiftAB)));" << std::endl;
-			INDT_5 << "}" << std::endl;
-			INDT_5 << "} else {" << std::endl;
-			INDT_5 << "acc32 = 0;" << std::endl;
-			INDT_5 << "}" << std::endl;
-		}
-
 		if (checksum_enabled)
-			INDT_5 << "acc_tile[m-m0] = " << (options.abyzft_int8_main_matmul ? "acc32_check" : "acc32") << ";" << std::endl;
+			INDT_5 << "acc_tile[m-m0] = acc32;" << std::endl;
 
 		INDT_5 << "y[b][m][o0][o1] = acc32;" << std::endl;
 		INDT_5 << "} /* m */" << std::endl;

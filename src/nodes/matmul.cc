@@ -195,6 +195,10 @@ void MatMul::print(std::ostream& dst) const
 
 	if (checksum_enabled) {
 		if (randomized_enabled) {
+			if (freivalds_enabled)
+				INDT_2 << "/* Freivalds verify: r^T C_row == A_row * (B r) */" << std::endl;
+			else
+				INDT_2 << "/* GVFA verify: r^T C_row ~= A_row * (B r) */" << std::endl;
 			// Use pre-computed r_cache and b_rs_cache (generated before the row loop).
 			// sumC_rand is O(N) per row; pred dot-product is O(K) per row — no O(N*K) recomputation.
 			INDT_2 << "for( uint32_t chk=0; chk<" << randomized_checks << "u; chk++ ) {" << std::endl;
@@ -214,6 +218,7 @@ void MatMul::print(std::ostream& dst) const
 			INDT_3 << "if( diff > tol ) { TAMPERING_DETECTED = true; TAMPERING_DETECTIONS++; break; }" << std::endl;
 			INDT_2 << "}" << std::endl;
 		} else {
+			INDT_2 << "/* ABFT verify (float domain): sum(C_row) == A_row * (B 1) */" << std::endl;
 			const bool ct = options.abft_weight_checksums_compiletime && B->isConst && B->data_buffer;
 			if (ct) {
 				INDT_2 << "const float* b_rs = b_rs_cache;" << std::endl;

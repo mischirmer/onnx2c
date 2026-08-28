@@ -31,6 +31,7 @@ struct onnx2c_opts {
 	bool abft_gemm = false;   // Add ABFT checks around gemm-like dot-products
 	bool abyzft_gemm = false; // AByzFT: randomized scaling around gemm-like dot-products
 	bool abyzft_wide_accumulator = false; // AByzFT: use int64 wide accumulator (default: int32 path)
+	bool abyzft_int8_main_matmul = false; // AByzFT: requantize scaled operands to int8 for int8*int8 main matmul
 	bool freivalds_gemm = false; // Freivalds check (random {0,1} vector) around gemm-like dot-products
 	uint32_t freivalds_checks = 1; // Number of independent Freivalds checks (default: 1)
 	bool gvfa_gemm = false; // GVFA: Freivalds variant with Gaussian random vectors

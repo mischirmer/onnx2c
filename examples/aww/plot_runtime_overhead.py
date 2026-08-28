@@ -5,6 +5,26 @@ import sys
 from pathlib import Path
 
 
+def _sort_key_mech(m: str):
+    if m == "baseline":
+        return (0, 0, m)
+    if m == "abft":
+        return (1, 0, m)
+    if m == "abyzft":
+        return (2, 0, m)
+    if m.startswith("freivalds") and m.endswith("x"):
+        n = m[len("freivalds") : -1]
+        if n.isdigit():
+            return (3, int(n), m)
+    if m.startswith("gvfa") and m.endswith("x"):
+        n = m[len("gvfa") : -1]
+        if n.isdigit():
+            return (4, int(n), m)
+    if m == "baseline_raw":
+        return (5, 0, m)
+    return (9, 0, m)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Plot runtime overhead bar chart")
     ap.add_argument("--results-csv", type=Path, required=True, help="CSV emitted by benchmark_runtime.py")
@@ -53,7 +73,7 @@ def main() -> int:
         oh_im2col = (t - im2col_time) / im2col_time * 100
         data.append((name, t, oh_raw, oh_im2col))
 
-    data.sort(key=lambda x: x[1])
+    data.sort(key=lambda x: _sort_key_mech(x[0]))
 
     names = [x[0] for x in data]
     times_list = [x[1] for x in data]

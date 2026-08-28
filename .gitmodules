@@ -13,3 +13,6 @@
 [submodule "benchmark"]
 	path = benchmark
 	url = https://github.com/google/benchmark.git
+[submodule "examples/tiny"]
+	path = examples/tiny
+	url = https://github.com/mlcommons/tiny.git

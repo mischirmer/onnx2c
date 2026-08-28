@@ -315,12 +315,12 @@ int main(int argc, char** argv)
 	bool fault_param_seen = false;
 
 	bool sweep = false;
-	// std::size_t sweep_indexes = 25;
-	std::size_t sweep_indexes = 10;
+	std::size_t sweep_indexes = 25;
+	// std::size_t sweep_indexes = 10;
 	std::string sweep_patterns_csv = "single_point,trivial,checkered";
-	// std::string sweep_values_csv = "0, 0.5, 1, 2.5, 5, 7.5, 10, 100, 1e3";
+	std::string sweep_values_csv = "0, 0.5, 1, 2.5, 5, 7.5, 10, 100, 1e3";
 	// std::string sweep_values_csv = "0, 5, 10, 100, 1e3";
-	std::string sweep_values_csv = "0, 10, 100";
+	// std::string sweep_values_csv = "0, 10, 100";
 	bool sweep_progress = true;
 	bool sweep_seed_set = false;
 	uint32_t sweep_seed = 0;

@@ -9,9 +9,9 @@ mkdir -p "${LOG_DIR}"
 
 # The Tiny evaluation tree in this repo carries the official manifest, while the
 # local .bin payloads are stored under energyrunner/datasets/kws01.
-BIN_DIR="${BIN_DIR:-../../energyrunner/datasets/kws01}"
-LABEL_CSV="${LABEL_CSV:-../../tiny/benchmark/evaluation/datasets/kws01-open/mfcc/y_labels.csv}"
-LIMIT="${LIMIT:-100}"
+BIN_DIR="${BIN_DIR:-/home/ge96fak/Documents/Code/fault-tolerance/energyrunner/datasets/kws01}"
+LABEL_CSV="${LABEL_CSV:-/home/ge96fak/Documents/Code/fault-tolerance/tiny/benchmark/evaluation/datasets/kws01-open/mfcc/y_labels.csv}"
+LIMIT="${LIMIT:-200}"
 
 if [[ "${AUTO_BUILD}" == "1" ]]; then
   make all freivalds3x freivalds4x

@@ -89,6 +89,20 @@ void Graph::print_source(std::ostream& dst, const std::string& interface_func_na
 			dst << "\tconst int32_t bias = (v < 0) ? (((int32_t)1 << shift) - 1) : 0;" << std::endl;
 			dst << "\treturn (v + bias) >> shift;" << std::endl;
 			dst << "}" << std::endl;
+			dst << "static inline uint32_t ABYZFT_requant_i16arr_to_i8(const int16_t* in, int8_t* out, uint32_t K) {" << std::endl;
+			dst << "\tint32_t max_abs = 0;" << std::endl;
+			dst << "\tfor( uint32_t i = 0; i < K; i++ ) {" << std::endl;
+			dst << "\t\tint32_t av = (in[i] < 0) ? -(int32_t)in[i] : (int32_t)in[i];" << std::endl;
+			dst << "\t\tif( av > max_abs ) max_abs = av;" << std::endl;
+			dst << "\t}" << std::endl;
+			dst << "\tuint32_t shift = 0;" << std::endl;
+			dst << "\tif( max_abs > 127 ) {" << std::endl;
+			dst << "\t\tuint32_t v = (uint32_t)max_abs;" << std::endl;
+			dst << "\t\twhile( (v >> shift) > 127 ) shift++;" << std::endl;
+			dst << "\t}" << std::endl;
+			dst << "\tfor( uint32_t i = 0; i < K; i++ ) out[i] = (int8_t)(in[i] >> shift);" << std::endl;
+			dst << "\treturn shift;" << std::endl;
+			dst << "}" << std::endl;
 		}
 		if (options.freivalds_gemm) {
 			dst << "static inline uint32_t ABYZFT_randbit(uint32_t* s) {" << std::endl;

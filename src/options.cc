@@ -146,6 +146,7 @@ void parse_cmdline_options(int argc, const char* argv[])
 	args::Flag abftGemm(parser, "abft-gemm", "Add ABFT checks for MatMul/im2col-lowered dot-products", {"abft-gemm"});
 	args::Flag abyzftGemm(parser, "abyzft-gemm", "AByzFT: randomized scaling + ABFT checks for gemm-like dot-products", {"abyzft-gemm"});
 	args::Flag abyzftWideAccumulator(parser, "abyzft-wide-accumulator", "AByzFT: use int64 wide accumulator for scaled dot-products (default: int32 path)", {"abyzft-wide-accumulator"});
+	args::Flag abyzftInt8MainMatmul(parser, "abyzft-int8-main-matmul", "AByzFT: requantize scaled operands to int8 and use int8*int8 main matmul", {"abyzft-int8-main-matmul"});
 	args::Flag freivaldsGemm(parser, "freivalds-gemm", "Freivalds check (random {0,1} vector) for gemm-like dot-products", {"freivalds-gemm"});
 	args::ValueFlag<uint32_t> freivaldsChecks(parser, "N", "Number of independent Freivalds checks (default: 1)", {"freivalds-checks"});
 	args::Flag gvfaGemm(parser, "gvfa-gemm", "GVFA check (Gaussian random vector) for gemm-like dot-products", {"gvfa-gemm"});
@@ -224,6 +225,9 @@ void parse_cmdline_options(int argc, const char* argv[])
 	}
 	if (abyzftWideAccumulator) {
 		options.abyzft_wide_accumulator = true;
+	}
+	if (abyzftInt8MainMatmul) {
+		options.abyzft_int8_main_matmul = true;
 	}
 	if (freivaldsGemm) {
 		options.freivalds_gemm = true;

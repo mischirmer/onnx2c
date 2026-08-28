@@ -830,7 +830,11 @@ void Im2Col::print_protected_quantized_conv_node(std::ostream& dst) const
     }
     if (options.abyzft_gemm) {
         if (use_compiletime_abyzft_wbase) {
-            dst << "\t    static const int16_t w_base_cache[" << out_ch << "][" << K << "] = {" << std::endl;
+            if (options.abyzft_int8_main_matmul) {
+                dst << "\t    static const int8_t w_base_cache[" << out_ch << "][" << K << "] = {" << std::endl;
+            } else {
+                dst << "\t    static const int16_t w_base_cache[" << out_ch << "][" << K << "] = {" << std::endl;
+            }
             for (int64_t m = 0; m < out_ch; m++) {
                 dst << "\t      {";
                 int64_t k = 0;
@@ -840,7 +844,7 @@ void Im2Col::print_protected_quantized_conv_node(std::ostream& dst) const
                             if (k > 0)
                                 dst << ", ";
                             const int idx = static_cast<int>((((m * in_ch_per_group) + c0) * kernel_h + ky) * kernel_w + kx);
-                            dst << static_cast<int16_t>(get_tensor_elem_i32(W, idx) - w_zp_const);
+                            dst << static_cast<int32_t>(get_tensor_elem_i32(W, idx) - w_zp_const);
                             k++;
                         }
                     }
@@ -853,7 +857,13 @@ void Im2Col::print_protected_quantized_conv_node(std::ostream& dst) const
             dst << "\t    };" << std::endl;
         }
         dst << "\t    int32_t abyzft_scaleB_cache[" << tiles_per_group << "][" << mtile << "];" << std::endl;
-        dst << "\t    int16_t w_scaled_cache[" << tiles_per_group << "][" << mtile << "][" << K << "];" << std::endl;
+        // int8 -> int16 scaling -> dynamic quantization to int8 -> int8*int8 matmul
+        if (options.abyzft_int8_main_matmul) {
+            dst << "\t    uint32_t abyzft_shift_w_cache[" << tiles_per_group << "][" << mtile << "];" << std::endl;
+            dst << "\t    int8_t w_scaled_cache[" << tiles_per_group << "][" << mtile << "][" << K << "];" << std::endl;
+        } else {
+            dst << "\t    int16_t w_scaled_cache[" << tiles_per_group << "][" << mtile << "][" << K << "];" << std::endl;
+        }
         dst << "\t    for(uint32_t tile = 0; tile < TILES_PER_GROUP; tile++) {" << std::endl;
         dst << "\t      uint32_t m0_pre = g * " << out_ch_per_group << "u + tile * MTILE;" << std::endl;
         dst << "\t      uint32_t m1_pre = MIN(m0_pre + MTILE, (g + 1u) * " << out_ch_per_group << "u);" << std::endl;
@@ -865,18 +875,66 @@ void Im2Col::print_protected_quantized_conv_node(std::ostream& dst) const
         dst << "\t      for(uint32_t m = m0_pre; m < m1_pre; m++) {" << std::endl;
         dst << "\t        uint32_t mi = m - m0_pre;" << std::endl;
         if (use_compiletime_abyzft_wbase) {
-            dst << "\t        const int16_t* w_base = w_base_cache[m];" << std::endl;
-            dst << "\t        for(uint32_t kk2 = 0; kk2 < K; kk2++) w_scaled_cache[tile][mi][kk2] = (int16_t)(w_base[kk2] * abyzft_scaleB_cache[tile][mi]);" << std::endl;
+            if (options.abyzft_int8_main_matmul) {
+                dst << "\t        int16_t w_maxabs = 0;" << std::endl;
+                dst << "\t        for(uint32_t kk2 = 0; kk2 < K; kk2++) {" << std::endl;
+                dst << "\t          int16_t v = (int16_t)((int32_t)w_base_cache[m][kk2] * abyzft_scaleB_cache[tile][mi]);" << std::endl;
+                dst << "\t          int16_t av = (v < 0) ? -v : v;" << std::endl;
+                dst << "\t          if( av > w_maxabs ) w_maxabs = av;" << std::endl;
+                dst << "\t        }" << std::endl;
+                dst << "\t        uint32_t w_shift = 0;" << std::endl;
+                dst << "\t        if( w_maxabs > 127 ) {" << std::endl;
+                dst << "\t          uint32_t v = (uint32_t)w_maxabs;" << std::endl;
+                dst << "\t          while( (v >> w_shift) > 127 ) w_shift++;" << std::endl;
+                dst << "\t        }" << std::endl;
+                dst << "\t        abyzft_shift_w_cache[tile][mi] = w_shift;" << std::endl;
+                dst << "\t        const int8_t* w_base = w_base_cache[m];" << std::endl;
+                dst << "\t        for(uint32_t kk2 = 0; kk2 < K; kk2++) w_scaled_cache[tile][mi][kk2] = (int8_t)((int32_t)w_base[kk2] * abyzft_scaleB_cache[tile][mi] >> w_shift);" << std::endl;
+            } else {
+                dst << "\t        const int16_t* w_base = w_base_cache[m];" << std::endl;
+                dst << "\t        for(uint32_t kk2 = 0; kk2 < K; kk2++) w_scaled_cache[tile][mi][kk2] = (int16_t)(w_base[kk2] * abyzft_scaleB_cache[tile][mi]);" << std::endl;
+            }
         } else {
-            dst << "\t        uint32_t k = 0;" << std::endl;
-            dst << "\t        for(uint32_t c0 = 0; c0 < " << in_ch_per_group << "u; c0++) {" << std::endl;
-            dst << "\t          for(uint32_t ky = 0; ky < " << kernel_h << "u; ky++) {" << std::endl;
-            dst << "\t            for(uint32_t kx = 0; kx < " << kernel_w << "u; kx++) {" << std::endl;
-            dst << "\t              int32_t wq = ((int32_t)w[m][c0][ky][kx] - w_zp);" << std::endl;
-            dst << "\t              w_scaled_cache[tile][mi][k++] = (int16_t)(wq * abyzft_scaleB_cache[tile][mi]);" << std::endl;
-            dst << "\t            }" << std::endl;
-            dst << "\t          }" << std::endl;
-            dst << "\t        }" << std::endl;
+            if (options.abyzft_int8_main_matmul) {
+                dst << "\t        int16_t w_maxabs = 0;" << std::endl;
+                dst << "\t        uint32_t k_max = 0;" << std::endl;
+                dst << "\t        for(uint32_t c0 = 0; c0 < " << in_ch_per_group << "u; c0++) {" << std::endl;
+                dst << "\t          for(uint32_t ky = 0; ky < " << kernel_h << "u; ky++) {" << std::endl;
+                dst << "\t            for(uint32_t kx = 0; kx < " << kernel_w << "u; kx++) {" << std::endl;
+                dst << "\t              int32_t wq = ((int32_t)w[m][c0][ky][kx] - w_zp);" << std::endl;
+                dst << "\t              int16_t v = (int16_t)(wq * abyzft_scaleB_cache[tile][mi]);" << std::endl;
+                dst << "\t              int16_t av = (v < 0) ? -v : v;" << std::endl;
+                dst << "\t              if( av > w_maxabs ) w_maxabs = av;" << std::endl;
+                dst << "\t              k_max++;" << std::endl;
+                dst << "\t            }" << std::endl;
+                dst << "\t          }" << std::endl;
+                dst << "\t        }" << std::endl;
+                dst << "\t        uint32_t w_shift = 0;" << std::endl;
+                dst << "\t        if( w_maxabs > 127 ) {" << std::endl;
+                dst << "\t          uint32_t v = (uint32_t)w_maxabs;" << std::endl;
+                dst << "\t          while( (v >> w_shift) > 127 ) w_shift++;" << std::endl;
+                dst << "\t        }" << std::endl;
+                dst << "\t        abyzft_shift_w_cache[tile][mi] = w_shift;" << std::endl;
+                dst << "\t        uint32_t k = 0;" << std::endl;
+                dst << "\t        for(uint32_t c0 = 0; c0 < " << in_ch_per_group << "u; c0++) {" << std::endl;
+                dst << "\t          for(uint32_t ky = 0; ky < " << kernel_h << "u; ky++) {" << std::endl;
+                dst << "\t            for(uint32_t kx = 0; kx < " << kernel_w << "u; kx++) {" << std::endl;
+                dst << "\t              int32_t wq = ((int32_t)w[m][c0][ky][kx] - w_zp);" << std::endl;
+                dst << "\t              w_scaled_cache[tile][mi][k++] = (int8_t)(wq * abyzft_scaleB_cache[tile][mi] >> w_shift);" << std::endl;
+                dst << "\t            }" << std::endl;
+                dst << "\t          }" << std::endl;
+                dst << "\t        }" << std::endl;
+            } else {
+                dst << "\t        uint32_t k = 0;" << std::endl;
+                dst << "\t        for(uint32_t c0 = 0; c0 < " << in_ch_per_group << "u; c0++) {" << std::endl;
+                dst << "\t          for(uint32_t ky = 0; ky < " << kernel_h << "u; ky++) {" << std::endl;
+                dst << "\t            for(uint32_t kx = 0; kx < " << kernel_w << "u; kx++) {" << std::endl;
+                dst << "\t              int32_t wq = ((int32_t)w[m][c0][ky][kx] - w_zp);" << std::endl;
+                dst << "\t              w_scaled_cache[tile][mi][k++] = (int16_t)(wq * abyzft_scaleB_cache[tile][mi]);" << std::endl;
+                dst << "\t            }" << std::endl;
+                dst << "\t          }" << std::endl;
+                dst << "\t        }" << std::endl;
+            }
         }
         dst << "\t      }" << std::endl;
         dst << "\t    }" << std::endl;
@@ -897,8 +955,28 @@ void Im2Col::print_protected_quantized_conv_node(std::ostream& dst) const
     if (options.abyzft_gemm) {
         dst << "\t        uint32_t abyzft_a_state = (uint32_t)(0xDEADBEEFu ^ LAYER_ID ^ b ^ g ^ (uint32_t)oy ^ (uint32_t)ox);" << std::endl;
         dst << "\t        int32_t abyzft_scaleA = (int32_t)" << scale_picker << "(&abyzft_a_state);" << std::endl;
-        dst << "\t        int16_t col_scaled[" << K << "];" << std::endl;
-        dst << "\t        for(uint32_t kk2 = 0; kk2 < K; kk2++) col_scaled[kk2] = (int16_t)(col[kk2] * abyzft_scaleA);" << std::endl;
+        // int8 -> int16 scaling -> dynamic quantization to int8 -> int8*int8 matmul
+        if (options.abyzft_int8_main_matmul) {
+            dst << "\t        int8_t col_scaled[" << K << "];" << std::endl;
+            dst << "\t        int16_t col_maxabs = 0;" << std::endl;
+            dst << "\t        for(uint32_t kk2 = 0; kk2 < K; kk2++) {" << std::endl;
+            dst << "\t          int16_t v = (int16_t)(col[kk2] * abyzft_scaleA);" << std::endl;
+            dst << "\t          int16_t av = (v < 0) ? -v : v;" << std::endl;
+            dst << "\t          if( av > col_maxabs ) col_maxabs = av;" << std::endl;
+            dst << "\t        }" << std::endl;
+            dst << "\t        uint32_t abyzft_shift_col = 0;" << std::endl;
+            dst << "\t        if( col_maxabs > 127 ) {" << std::endl;
+            dst << "\t          uint32_t v = (uint32_t)col_maxabs;" << std::endl;
+            dst << "\t          while( (v >> abyzft_shift_col) > 127 ) abyzft_shift_col++;" << std::endl;
+            dst << "\t        }" << std::endl;
+            dst << "\t        for(uint32_t kk2 = 0; kk2 < K; kk2++) {" << std::endl;
+            dst << "\t          int16_t v = (int16_t)(col[kk2] * abyzft_scaleA);" << std::endl;
+            dst << "\t          col_scaled[kk2] = (int8_t)(v >> abyzft_shift_col);" << std::endl;
+            dst << "\t        }" << std::endl;
+        } else {
+            dst << "\t        int16_t col_scaled[" << K << "];" << std::endl;
+            dst << "\t        for(uint32_t kk2 = 0; kk2 < K; kk2++) col_scaled[kk2] = (int16_t)(col[kk2] * abyzft_scaleA);" << std::endl;
+        }
     }
     dst << "\t        for(uint32_t m0 = g * " << out_ch_per_group << "u; m0 < (g + 1u) * " << out_ch_per_group << "u; m0 += MTILE) {" << std::endl;
     dst << "\t          uint32_t m1 = MIN(m0 + MTILE, (g + 1u) * " << out_ch_per_group << "u);" << std::endl;
@@ -980,21 +1058,41 @@ void Im2Col::print_protected_quantized_conv_node(std::ostream& dst) const
         dst << "\t            }" << std::endl;
     };
     if (options.abyzft_gemm) {
-        dst << "\t            int32_t acc32 = " << (qlinear && has_bias ? "bias[m]" : "0") << ";" << std::endl;
-        dst << "\t            " << (use_abyzft_i32_accum ? "int32_t" : "int64_t") << " acc_scaled = 0;" << std::endl;
-        dst << "\t            const int16_t* w_scaled = w_scaled_cache[tile_idx][m - m0];" << std::endl;
-        if (use_abyzft_i32_accum)
-            dst << "\t            for(uint32_t kk2 = 0; kk2 < K; kk2++) acc_scaled += (int32_t)col_scaled[kk2] * (int32_t)w_scaled[kk2];" << std::endl;
-        else
+        if (options.abyzft_int8_main_matmul) {
+            // int8 -> int16 scaling -> dynamic quantization to int8 -> int8*int8 matmul
+            dst << "\t            int32_t acc32 = " << (qlinear && has_bias ? "bias[m]" : "0") << ";" << std::endl;
+            dst << "\t            int64_t acc_scaled = 0;" << std::endl;
+            dst << "\t            const int8_t* w_scaled = w_scaled_cache[tile_idx][m - m0];" << std::endl;
             dst << "\t            for(uint32_t kk2 = 0; kk2 < K; kk2++) acc_scaled += (int64_t)col_scaled[kk2] * (int64_t)w_scaled[kk2];" << std::endl;
-        dst << "\t            int64_t scaleAB = (int64_t)abyzft_scaleA * (int64_t)abyzft_scaleB_cache[tile_idx][m - m0];" << std::endl;
-        dst << "\t            int64_t scaleAB_mag = (scaleAB < 0) ? -scaleAB : scaleAB;" << std::endl;
-        dst << "\t            int32_t scaleAB_sign = (scaleAB < 0) ? -1 : 1;" << std::endl;
-        dst << "\t            uint32_t scaleAB_shift = ABYZFT_pow2_shift_u64((uint64_t)scaleAB_mag);" << std::endl;
-        // Fault injected into acc_scaled BEFORE descaling: Byzantine pair (+d,-d) in acc_scaled
-        // is descaled asymmetrically when scaleB[m]!=scaleB[m+1], so plain sum catches it.
-        emit_fault_inject("acc_scaled");
-        dst << "\t            if( scaleAB_mag != 0 ) acc32 += (int32_t)(scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, scaleAB_shift));" << std::endl;
+            dst << "\t            int64_t scaleAB = (int64_t)abyzft_scaleA * (int64_t)abyzft_scaleB_cache[tile_idx][m - m0];" << std::endl;
+            dst << "\t            int64_t scaleAB_mag = (scaleAB < 0) ? -scaleAB : scaleAB;" << std::endl;
+            dst << "\t            int32_t scaleAB_sign = (scaleAB < 0) ? -1 : 1;" << std::endl;
+            dst << "\t            uint32_t scaleAB_shift = ABYZFT_pow2_shift_u64((uint64_t)scaleAB_mag);" << std::endl;
+            // acc_scaled = sum(col_i8 * w_i8) approx sum(col*scaleA*w*scaleB) >> (col_shift + w_shift)
+            // Compensate requant shifts, then descale AByzFT scaling:
+            // result = descale(acc_scaled, scaleAB_shift - col_shift - w_shift)
+            dst << "\t            uint32_t req_shift = abyzft_shift_col + abyzft_shift_w_cache[tile_idx][m - m0];" << std::endl;
+            emit_fault_inject("acc_scaled");
+            dst << "\t            if( scaleAB_mag != 0 && scaleAB_shift > req_shift ) acc32 += (int32_t)(scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, scaleAB_shift - req_shift));" << std::endl;
+            dst << "\t            else if( scaleAB_mag != 0 && scaleAB_shift < req_shift ) acc32 += (int32_t)(scaleAB_sign * (acc_scaled << (req_shift - scaleAB_shift)));" << std::endl;
+            dst << "\t            else if( scaleAB_mag != 0 ) acc32 += (int32_t)(scaleAB_sign * acc_scaled);" << std::endl;
+        } else {
+            dst << "\t            int32_t acc32 = " << (qlinear && has_bias ? "bias[m]" : "0") << ";" << std::endl;
+            dst << "\t            " << (use_abyzft_i32_accum ? "int32_t" : "int64_t") << " acc_scaled = 0;" << std::endl;
+            dst << "\t            const int16_t* w_scaled = w_scaled_cache[tile_idx][m - m0];" << std::endl;
+            if (use_abyzft_i32_accum)
+                dst << "\t            for(uint32_t kk2 = 0; kk2 < K; kk2++) acc_scaled += (int32_t)col_scaled[kk2] * (int32_t)w_scaled[kk2];" << std::endl;
+            else
+                dst << "\t            for(uint32_t kk2 = 0; kk2 < K; kk2++) acc_scaled += (int64_t)col_scaled[kk2] * (int64_t)w_scaled[kk2];" << std::endl;
+            dst << "\t            int64_t scaleAB = (int64_t)abyzft_scaleA * (int64_t)abyzft_scaleB_cache[tile_idx][m - m0];" << std::endl;
+            dst << "\t            int64_t scaleAB_mag = (scaleAB < 0) ? -scaleAB : scaleAB;" << std::endl;
+            dst << "\t            int32_t scaleAB_sign = (scaleAB < 0) ? -1 : 1;" << std::endl;
+            dst << "\t            uint32_t scaleAB_shift = ABYZFT_pow2_shift_u64((uint64_t)scaleAB_mag);" << std::endl;
+            // Fault injected into acc_scaled BEFORE descaling: Byzantine pair (+d,-d) in acc_scaled
+            // is descaled asymmetrically when scaleB[m]!=scaleB[m+1], so plain sum catches it.
+            emit_fault_inject("acc_scaled");
+            dst << "\t            if( scaleAB_mag != 0 ) acc32 += (int32_t)(scaleAB_sign * ABYZFT_descale_pow2_i64(acc_scaled, scaleAB_shift));" << std::endl;
+        }
     } else {
         dst << "\t            int32_t acc32 = " << (qlinear && has_bias ? "bias[m]" : "0") << ";" << std::endl;
         dst << "\t            uint32_t k = 0;" << std::endl;
