@@ -245,7 +245,6 @@ size_t Tensor::required_alignment(void) const
 	}
 }
 
-
 std::string Tensor::data_type_str(void) const
 {
 	switch (data_type) {

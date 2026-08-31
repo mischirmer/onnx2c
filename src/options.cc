@@ -4,8 +4,8 @@
 #include "options.h"
 #include "args.hxx"
 #include "error.h"
-#include "timestamp.h"
 #include "optimization_passes/tensor_arena_planner.h"
+#include "timestamp.h"
 
 #include <iostream>
 

@@ -33,7 +33,8 @@ struct TensorArenaMetrics {
 	std::string schedule_strategy;
 };
 
-enum class arena_strategy { first_fit, memory_schedule };
+enum class arena_strategy { first_fit,
+	                    memory_schedule };
 arena_strategy parse_arena_strategy(const std::string& value);
 const char* arena_strategy_name(arena_strategy strategy);
 
