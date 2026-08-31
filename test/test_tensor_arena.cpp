@@ -171,6 +171,25 @@ onnx::ModelProto make_model_residual()
 	return model;
 }
 
+onnx::ModelProto make_model_scheduler_branch()
+{
+	onnx::ModelProto model;
+	model.mutable_opset_import()->Add()->set_version(13);
+	auto* graph = model.mutable_graph();
+	*graph->add_input() = make_value_info("input", onnx::TensorProto_DataType_FLOAT, {1, 100});
+	*graph->add_output() = make_value_info("output", onnx::TensorProto_DataType_FLOAT, {});
+	auto add_relu = [&](const char* name, const char* input, const char* output) {
+		auto* node = graph->add_node(); node->set_op_type("Relu"); node->set_name(name); node->add_input(input); node->add_output(output);
+	};
+	add_relu("branch_b", "input", "b");
+	add_relu("branch_c", "input", "c");
+	auto* reduce_b = graph->add_node(); reduce_b->set_op_type("ReduceMean"); reduce_b->set_name("reduce_b"); reduce_b->add_input("b"); reduce_b->add_output("d");
+	// The resolver accepts the default axes and keepdims for this scalar reduction.
+	auto* reduce_c = graph->add_node(); reduce_c->set_op_type("ReduceMean"); reduce_c->set_name("reduce_c"); reduce_c->add_input("c"); reduce_c->add_output("e");
+	auto* add = graph->add_node(); add->set_op_type("Add"); add->set_name("join"); add->add_input("d"); add->add_input("e"); add->add_output("output");
+	return model;
+}
+
 onnx::ModelProto make_model_scalar()
 {
 	onnx::ModelProto model;
@@ -266,6 +285,64 @@ std::string render_source(onnx::ModelProto& model, bool no_globals = false)
 	std::ostringstream source;
 	graph.print_source(source, "entry");
 	return source.str();
+}
+
+TEST_CASE("memory scheduler preserves dependencies and is deterministic", "[tensor_arena][scheduler]")
+{
+	onnx::ModelProto model = make_model_fork_join();
+	reset_options();
+	Graph graph(model);
+	auto original = graph.execution_node_names_for_test();
+	{
+		Graph repeat(model);
+		repeat.apply_memory_schedule_for_test();
+		auto first = repeat.execution_node_names_for_test();
+		Graph again(model);
+		again.apply_memory_schedule_for_test();
+		REQUIRE(first == again.execution_node_names_for_test());
+		REQUIRE(first.size() == original.size());
+	}
+}
+
+TEST_CASE("memory scheduler leaves a linear graph unchanged", "[tensor_arena][scheduler]")
+{
+	onnx::ModelProto model = make_model_linear();
+	reset_options();
+	Graph graph(model);
+	auto original = graph.execution_node_names_for_test();
+	{
+		Graph candidate(model);
+		candidate.apply_memory_schedule_for_test();
+		REQUIRE(candidate.execution_node_names_for_test() == original);
+	}
+}
+
+TEST_CASE("scheduler keeps original order for equal ready choices", "[tensor_arena][scheduler]")
+{
+	onnx::ModelProto model = make_model_fork_join();
+	reset_options();
+	Graph graph(model);
+	graph.apply_memory_schedule_for_test();
+	REQUIRE(graph.execution_node_names_for_test() == std::vector<std::string>{"relu_left", "relu_right", "add_out"});
+}
+
+TEST_CASE("minimum projected live scheduler reduces an exact branch peak", "[tensor_arena][scheduler]")
+{
+	onnx::ModelProto model = make_model_scheduler_branch();
+	reset_options();
+	Graph original(model);
+	auto original_names = original.execution_node_names_for_test();
+	auto original_lifetimes = original.analyze_tensor_lifetimes();
+	REQUIRE(original_names == std::vector<std::string>{"branch_b", "branch_c", "reduce_b", "reduce_c", "join"});
+	REQUIRE(compute_peak_live_bytes(original_lifetimes) == 804);
+
+	Graph scheduled(model);
+	scheduled.apply_memory_schedule_for_test();
+	REQUIRE(scheduled.execution_node_names_for_test() == std::vector<std::string>{"branch_b", "reduce_b", "branch_c", "reduce_c", "join"});
+	auto lifetimes = scheduled.analyze_tensor_lifetimes();
+	REQUIRE(compute_peak_live_bytes(lifetimes) == 408);
+	for (const auto& lifetime : lifetimes)
+		REQUIRE(lifetime.first_use <= lifetime.last_use);
 }
 
 } // namespace

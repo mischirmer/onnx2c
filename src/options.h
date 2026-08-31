@@ -43,6 +43,7 @@ struct onnx2c_opts {
 	std::string input_file;
 	std::string interface_func_name = "entry";
 	tensor_memory_strategy tensor_memory = tensor_memory_strategy::default_mode;
+	std::string arena_strategy = "first-fit";
 	std::map<std::string, uint32_t> dim_defines;
 
 	// Save the raw command line arguments such that they can be printed

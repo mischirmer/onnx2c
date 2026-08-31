@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <limits>
 
 namespace toC {
 namespace {
@@ -122,63 +123,72 @@ bool validate_arena_plan(const ArenaPlan& plan, const std::vector<TensorLifetime
 	return true;
 }
 
-ArenaPlan TensorArenaPlanner::plan(const std::vector<TensorLifetime>& lifetimes) const
+namespace {
+
+bool less_name(const TensorLifetime& a, const TensorLifetime& b)
 {
-	std::vector<TensorLifetime> sorted = lifetimes;
-	std::sort(sorted.begin(), sorted.end(), [](const TensorLifetime& a, const TensorLifetime& b) {
-		if (a.size_bytes != b.size_bytes)
-			return a.size_bytes > b.size_bytes;
-		if (a.first_use != b.first_use)
-			return a.first_use < b.first_use;
-		if (a.last_use != b.last_use)
-			return a.last_use < b.last_use;
-		return a.tensor->name < b.tensor->name;
+	return a.tensor->name < b.tensor->name;
+}
+
+ArenaPlan pack(const std::vector<TensorLifetime>& lifetimes)
+{
+	std::vector<TensorLifetime> sequence = lifetimes;
+	std::sort(sequence.begin(), sequence.end(), [](const TensorLifetime& a, const TensorLifetime& b) {
+		if (a.size_bytes != b.size_bytes) return a.size_bytes > b.size_bytes;
+		return less_name(a, b);
 	});
 
-	ArenaPlan plan;
-	for (const TensorLifetime& lifetime : sorted) {
-		ArenaAllocation allocation;
-		allocation.tensor = lifetime.tensor;
-		allocation.size = lifetime.size_bytes;
-		allocation.alignment = lifetime.alignment;
-		allocation.first_use = lifetime.first_use;
-		allocation.last_use = lifetime.last_use;
-
-		std::vector<size_t> candidates{0};
-		for (const ArenaAllocation& placed : plan.allocations) {
-			TensorLifetime placed_lifetime{placed.tensor, placed.first_use, placed.last_use, placed.size, placed.alignment};
-			if (!lifetimes_overlap(lifetime, placed_lifetime))
-				continue;
-			candidates.push_back(checked_add(placed.offset, placed.size, "candidate offset overflow"));
-		}
-		std::sort(candidates.begin(), candidates.end());
-		candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
-
-		bool placed = false;
-		for (size_t candidate : candidates) {
-			candidate = align_up(candidate, allocation.alignment);
-			allocation.offset = candidate;
+	ArenaPlan result;
+	for (const TensorLifetime& life : sequence) {
+		ArenaAllocation candidate{life.tensor, 0, life.size_bytes, life.alignment, life.first_use, life.last_use};
+		size_t offset = 0;
+		while (true) {
+			offset = align_up(offset, life.alignment);
+			candidate.offset = offset;
 			bool conflict = false;
-			for (const ArenaAllocation& other : plan.allocations) {
-				if (allocations_conflict(allocation, other)) {
+			for (const auto& placed : result.allocations) {
+				if (allocations_conflict(candidate, placed)) {
+					offset = checked_add(placed.offset, placed.size, "candidate offset overflow");
 					conflict = true;
 					break;
 				}
 			}
-			if (conflict)
-				continue;
-
-			plan.allocations.push_back(allocation);
-			plan.arena_size = std::max(plan.arena_size, checked_add(allocation.offset, allocation.size, "arena size overflow"));
-			placed = true;
-			break;
+			if (!conflict) break;
 		}
-
-		if (!placed)
-			ERROR("failed to place tensor in arena plan");
+		result.allocations.push_back(candidate);
+		result.arena_size = std::max(result.arena_size, checked_add(offset, life.size_bytes, "arena size overflow"));
 	}
+	return result;
+}
 
-	return plan;
+} // namespace
+
+arena_strategy parse_arena_strategy(const std::string& value)
+{
+	if (value == "first-fit") return arena_strategy::first_fit;
+	if (value == "memory-schedule") return arena_strategy::memory_schedule;
+	ERROR("bad command line argument for '--arena-strategy': " << value);
+}
+
+const char* arena_strategy_name(arena_strategy strategy)
+{
+	return strategy == arena_strategy::memory_schedule ? "memory-schedule" : "first-fit";
+}
+
+ArenaPlan TensorArenaPlanner::plan(const std::vector<TensorLifetime>& lifetimes) const
+{
+	return pack(lifetimes);
+}
+
+ArenaPlan TensorArenaPlanner::plan(const std::vector<TensorLifetime>& lifetimes, arena_strategy strategy, TensorArenaMetrics* metrics) const
+{
+	if (strategy != arena_strategy::first_fit && strategy != arena_strategy::memory_schedule)
+		ERROR("arena planner only supports first-fit placement");
+	ArenaPlan result = pack(lifetimes);
+	if (metrics) {
+		metrics->placement_strategy = "first-fit";
+	}
+	return result;
 }
 
 } // namespace toC

@@ -21,6 +21,8 @@ class Graph {
 	void print_header(std::ostream& destination, const std::string& interface_func_name);
 	void print_source(std::ostream& destination, const std::string& interface_func_name);
 	void print_initialization(std::ostream& destination);
+	void apply_memory_schedule_for_test();
+	std::vector<std::string> execution_node_names_for_test() const;
 
 	/* print individual parts of the file */
 	void print_file_frontmatter(std::ostream& destination);
@@ -105,6 +107,7 @@ class Graph {
 	Tensor* findTensor(const std::string& name) const;
 	ArenaPlan build_union_baseline_arena_plan(const std::vector<TensorLifetime>& lifetimes) const;
 	void log_tensor_arena_metrics(void) const;
+	void schedule_nodes_for_memory();
 
 	// counter for naming anonymous nodes with a number
 	static int anonymous_nodes;

@@ -112,6 +112,10 @@ void Graph::log_tensor_arena_metrics(void) const
 	LOG(INFO) << "  peak-live lower bound:     " << tensor_memory_metrics.peak_live_lower_bound << std::endl;
 	LOG(INFO) << "  union baseline bytes:      " << tensor_memory_metrics.union_baseline_bytes << std::endl;
 	LOG(INFO) << "  arena bytes:               " << tensor_memory_metrics.arena_bytes << std::endl;
+	if (!tensor_memory_metrics.placement_strategy.empty()) {
+		LOG(INFO) << "  strategy:                  " << tensor_memory_metrics.placement_strategy << std::endl;
+		if (!tensor_memory_metrics.schedule_strategy.empty()) LOG(INFO) << "  schedule:                  " << tensor_memory_metrics.schedule_strategy << std::endl;
+	}
 	if (tensor_memory_metrics.union_baseline_bytes > 0) {
 		double savings = 100.0 * static_cast<double>(tensor_memory_metrics.union_baseline_bytes - tensor_memory_metrics.arena_bytes) / static_cast<double>(tensor_memory_metrics.union_baseline_bytes);
 		LOG(INFO) << "  savings vs union:          " << std::fixed << std::setprecision(2) << savings << "%" << std::endl;
@@ -122,52 +126,134 @@ void Graph::log_tensor_arena_metrics(void) const
 	}
 }
 
+void Graph::apply_memory_schedule_for_test()
+{
+	schedule_nodes_for_memory();
+}
+
+std::vector<std::string> Graph::execution_node_names_for_test() const
+{
+	std::vector<std::string> names;
+	for (const Node* node : nodes) if (node->op_name != "graph_io") names.push_back(node->onnx_name);
+	return names;
+}
+
+void Graph::schedule_nodes_for_memory()
+{
+	std::vector<Node*> compute;
+	for (Node* node : nodes)
+		if (node->op_name != "graph_io") compute.push_back(node);
+	for (Node* node : compute) {
+		if (node->op_name == "RandomUniform" || node->op_name == "RandomNormal" || node->op_name == "Multinomial")
+			return;
+	}
+	std::map<Node*, size_t> original;
+	for (size_t i = 0; i < compute.size(); ++i) original[compute[i]] = i;
+	std::set<Node*> scheduled;
+	std::vector<Node*> result;
+	while (result.size() < compute.size()) {
+		Node* selected = nullptr;
+		size_t selected_score = SIZE_MAX;
+		for (Node* candidate : compute) {
+			if (scheduled.count(candidate)) continue;
+			bool ready = true;
+			for (unsigned i = 0; i < candidate->get_number_of_inputs(); ++i) {
+				Tensor* input = candidate->get_input_tensor(i);
+				if (input && input->producer && input->producer->op_name != "graph_io" && !scheduled.count(input->producer)) { ready = false; break; }
+			}
+			if (!ready) continue;
+			size_t freed = 0, produced = 0;
+			for (unsigned i = 0; i < candidate->get_number_of_inputs(); ++i) {
+				Tensor* input = candidate->get_input_tensor(i);
+				if (!input || !input->eligible_for_arena()) continue;
+				bool final = true;
+				for (Node* consumer : input->consumers)
+					if (consumer->op_name != "graph_io" && !scheduled.count(consumer) && consumer != candidate) { final = false; break; }
+				if (final) freed += input->data_size_bytes();
+			}
+			candidate->forEachOutput([&](Tensor* output) { if (output->eligible_for_arena()) produced += output->data_size_bytes(); });
+			size_t score = 0;
+			score = produced > freed ? produced - freed : 0;
+			if (!selected || score < selected_score || (score == selected_score && original[candidate] < original[selected])) { selected = candidate; selected_score = score; }
+		}
+		if (!selected) return;
+		scheduled.insert(selected);
+		result.push_back(selected);
+	}
+	std::vector<Node*> reordered;
+	size_t next = 0;
+	for (Node* node : nodes) {
+		if (node->op_name == "graph_io") reordered.push_back(node);
+		else reordered.push_back(result[next++]);
+	}
+	nodes = reordered;
+}
+
 void Graph::assign_tensor_memory_arena(void)
 {
 	clear_tensor_memory_assignments();
-	std::vector<TensorLifetime> lifetimes = analyze_tensor_lifetimes();
-	tensor_memory_metrics.eligible_tensor_count = lifetimes.size();
-	for (const TensorLifetime& lifetime : lifetimes) {
-		if (lifetime.size_bytes > SIZE_MAX - tensor_memory_metrics.total_intermediate_bytes)
-			ERROR("tensor intermediate byte sum overflow");
-		tensor_memory_metrics.total_intermediate_bytes += lifetime.size_bytes;
+	std::vector<Node*> original_nodes = nodes;
+	std::vector<TensorLifetime> original_lifetimes = analyze_tensor_lifetimes();
+	tensor_memory_metrics.eligible_tensor_count = original_lifetimes.size();
+	for (const auto& life : original_lifetimes) {
+		if (life.size_bytes > SIZE_MAX - tensor_memory_metrics.total_intermediate_bytes) ERROR("tensor intermediate byte sum overflow");
+		tensor_memory_metrics.total_intermediate_bytes += life.size_bytes;
 	}
-	tensor_memory_metrics.peak_live_lower_bound = compute_peak_live_bytes(lifetimes);
-	if (lifetimes.empty()) {
-		log_tensor_arena_metrics();
-		return;
-	}
+	tensor_memory_metrics.peak_live_lower_bound = compute_peak_live_bytes(original_lifetimes);
+	if (original_lifetimes.empty()) { log_tensor_arena_metrics(); return; }
 
 	unionize_tensors();
-	ArenaPlan union_plan = build_union_baseline_arena_plan(lifetimes);
+	ArenaPlan union_plan = build_union_baseline_arena_plan(original_lifetimes);
 	std::string validation_error;
-	if (!validate_arena_plan(union_plan, lifetimes, &validation_error))
-		ERROR("invalid union baseline arena plan: " << validation_error);
-
-	TensorArenaPlanner planner;
-	ArenaPlan planner_plan = planner.plan(lifetimes);
-	if (!validate_arena_plan(planner_plan, lifetimes, &validation_error))
-		ERROR("invalid tensor arena plan: " << validation_error);
-
-	tensor_memory_metrics.union_baseline_bytes = union_plan.arena_size;
-	const ArenaPlan* selected_plan = &planner_plan;
-	if (union_plan.arena_size < planner_plan.arena_size)
-		selected_plan = &union_plan;
-
-	clear_tensor_memory_assignments();
-	tensor_arena_plan = *selected_plan;
-	tensor_arena_enabled = true;
-	for (const ArenaAllocation& allocation : tensor_arena_plan.allocations)
-		allocation.tensor->assign_arena(allocation.offset, allocation.size, allocation.alignment);
-	tensor_memory_metrics.eligible_tensor_count = lifetimes.size();
-	for (const TensorLifetime& lifetime : lifetimes) {
-		if (lifetime.size_bytes > SIZE_MAX - tensor_memory_metrics.total_intermediate_bytes)
-			ERROR("tensor intermediate byte sum overflow");
-		tensor_memory_metrics.total_intermediate_bytes += lifetime.size_bytes;
+	if (!validate_arena_plan(union_plan, original_lifetimes, &validation_error)) ERROR("invalid union baseline arena plan: " << validation_error);
+	arena_strategy requested = parse_arena_strategy(options.arena_strategy);
+	std::vector<int> schedules{0};
+	if (requested == arena_strategy::memory_schedule) schedules = {0, 1};
+	arena_strategy packing = arena_strategy::first_fit;
+	ArenaPlan best_plan;
+	TensorArenaMetrics best_metrics;
+	std::vector<TensorLifetime> best_lifetimes;
+	std::vector<Node*> best_nodes = original_nodes;
+	bool have_plan = false;
+	for (int schedule : schedules) {
+		nodes = original_nodes;
+		if (schedule != 0) schedule_nodes_for_memory();
+		std::vector<TensorLifetime> lifetimes = analyze_tensor_lifetimes();
+		TensorArenaMetrics candidate_metrics;
+		TensorArenaPlanner planner;
+		ArenaPlan candidate = planner.plan(lifetimes, packing, &candidate_metrics);
+		if (!validate_arena_plan(candidate, lifetimes, &validation_error)) ERROR("invalid tensor arena plan: " << validation_error);
+		bool better_schedule = !have_plan || compute_peak_live_bytes(lifetimes) < compute_peak_live_bytes(best_lifetimes);
+		if (better_schedule) {
+			have_plan = true;
+			best_plan = candidate;
+			best_metrics = candidate_metrics;
+			best_lifetimes = lifetimes;
+			best_nodes = nodes;
+			best_metrics.schedule_strategy = schedule == 0 ? "original" : "minimum-projected-live";
+		}
 	}
-	tensor_memory_metrics.peak_live_lower_bound = compute_peak_live_bytes(lifetimes);
+	nodes = best_nodes;
+	clear_tensor_memory_assignments();
+	tensor_arena_plan = best_plan;
+	tensor_arena_enabled = true;
+	for (const auto& allocation : tensor_arena_plan.allocations) allocation.tensor->assign_arena(allocation.offset, allocation.size, allocation.alignment);
+	tensor_memory_metrics.eligible_tensor_count = best_lifetimes.size();
+	tensor_memory_metrics.total_intermediate_bytes = 0;
+	for (const auto& life : best_lifetimes) tensor_memory_metrics.total_intermediate_bytes += life.size_bytes;
+	tensor_memory_metrics.peak_live_lower_bound = compute_peak_live_bytes(best_lifetimes);
 	tensor_memory_metrics.union_baseline_bytes = union_plan.arena_size;
+	if (union_plan.arena_size < tensor_arena_plan.arena_size) {
+		nodes = original_nodes;
+		tensor_arena_plan = union_plan;
+		tensor_memory_metrics.peak_live_lower_bound = compute_peak_live_bytes(original_lifetimes);
+		tensor_memory_metrics.schedule_strategy = "original";
+		tensor_arena_enabled = true;
+		for (const auto& allocation : tensor_arena_plan.allocations) allocation.tensor->assign_arena(allocation.offset, allocation.size, allocation.alignment);
+	}
 	tensor_memory_metrics.arena_bytes = tensor_arena_plan.arena_size;
+	tensor_memory_metrics.placement_strategy = best_metrics.placement_strategy;
+	tensor_memory_metrics.schedule_strategy = best_metrics.schedule_strategy;
 	log_tensor_arena_metrics();
 }
 

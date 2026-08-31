@@ -5,6 +5,7 @@
 #include "args.hxx"
 #include "error.h"
 #include "timestamp.h"
+#include "optimization_passes/tensor_arena_planner.h"
 
 #include <iostream>
 
@@ -146,6 +147,7 @@ void parse_cmdline_options(int argc, const char* argv[])
 	args::ValueFlag<int> precision(parser, "digits", "Floating-point output precision (default: 20)", {'P', "precision"});
 	args::ValueFlag<std::string> optimizations(parser, "opt[,opt]...", "Specify optimization passes to run. ('help' to list available)", {'p', "optimizations"});
 	args::ValueFlag<std::string> tensorMemory(parser, "strategy", "Intermediate tensor memory strategy: union, arena, or none", {"tensor-memory"});
+	args::ValueFlag<std::string> arenaStrategy(parser, "strategy", "Arena planner strategy (first-fit or memory-schedule)", {"arena-strategy"});
 	args::ValueFlag<std::string> funcName(parser, "func-name", "The name of the forward pass function", {'f', "func-name"});
 	args::Flag help(parser, "help", "Print this help text.", {'h', "help"});
 	args::Flag version(parser, "version", "Print onnx2c version", {'v', "version"});
@@ -206,6 +208,10 @@ void parse_cmdline_options(int argc, const char* argv[])
 	}
 	if (tensorMemory) {
 		store_tensor_memory_strategy(args::get(tensorMemory));
+	}
+	if (arenaStrategy) {
+		toC::parse_arena_strategy(args::get(arenaStrategy));
+		options.arena_strategy = args::get(arenaStrategy);
 	}
 	if (input) {
 		options.input_file = args::get(input);

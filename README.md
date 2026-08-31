@@ -90,9 +90,9 @@ Onnx2c has a few optimization passes that modify the generated output:
  - Optimization for AVR processors to put constants into instruction memory.
 
 #### Tensor Arena Memory
-Intermediate tensors can share one statically allocated arena planned offline from their lifetimes, with no runtime allocation.
-Select `--tensor-memory=union|arena|none`; union remains the default, and arena mode falls back to the smaller valid plan.
-`--no-globals` places the arena in the generated entry function.
+Intermediate tensors use one compile-time arena planned from their lifetimes; no runtime allocator is used.
+Use `--tensor-memory=union|arena|none`; arena mode keeps the smaller valid union fallback and supports `--no-globals`.
+With `--arena-strategy=memory-schedule`, a deterministic offline scheduler may finish one branch before starting another; otherwise the original order is retained.
 Constants and graph I/O remain outside the arena.
 
 Floating-point output precision can be configured with `--precision N`.

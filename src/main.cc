@@ -31,7 +31,6 @@ int main(int argc, const char* argv[])
 	toC::Graph toCgraph(onnx_model);
 	if (options.opt_fold_casts)
 		toCgraph.fold_casts();
-
 	switch (options.tensor_memory) {
 		case tensor_memory_strategy::default_mode:
 			if (options.opt_unionize)

@@ -49,6 +49,8 @@ std::vector<TensorLifetime> analyze_tensor_lifetimes(const std::vector<Node*>& n
 			auto consumer_it = execution_index.find(consumer);
 			if (consumer_it == execution_index.end())
 				ERROR("Tensor " << tensor->name << " has an unscheduled consumer");
+			if (consumer_it->second < lifetime.first_use)
+				ERROR("Tensor " << tensor->name << " consumer precedes producer");
 			lifetime.last_use = std::max(lifetime.last_use, consumer_it->second);
 		}
 

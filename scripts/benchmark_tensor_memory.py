@@ -32,6 +32,7 @@ from pathlib import Path
 
 # Modes are run (and reported) in this order.
 MODES = ("none", "union", "arena")
+ARENA_STRATEGIES = ("first-fit", "memory-schedule")
 
 # Log block emitted by toC::Graph::log_tensor_arena_metrics(), and the metric
 # labels -> result keys it contains.
@@ -168,15 +169,19 @@ def find_onnx2c(explicit=None):
     return None
 
 
-def run_mode(onnx2c, model, mode, workdir):
+def run_mode(onnx2c, model, mode, workdir, arena_strategy=None):
     """Run onnx2c once for one tensor-memory mode.
 
     Returns the combined stdout+stderr text of the run. Raises a
     RuntimeError with a clear message if generation fails.
     """
-    c_file = workdir / f"{model.stem}_{mode}.c"
-    log_file = workdir / f"{model.stem}_{mode}.log"
-    command = [str(onnx2c), "-l2", f"--tensor-memory={mode}", str(model)]
+    suffix = f"_{arena_strategy}" if arena_strategy else ""
+    c_file = workdir / f"{model.stem}_{mode}{suffix}.c"
+    log_file = workdir / f"{model.stem}_{mode}{suffix}.log"
+    command = [str(onnx2c), "-l2", f"--tensor-memory={mode}"]
+    if arena_strategy:
+        command.append(f"--arena-strategy={arena_strategy}")
+    command.append(str(model))
     try:
         with open(c_file, "w") as c_stream, open(log_file, "w") as log_stream:
             result = subprocess.run(command, stdout=c_stream, stderr=log_stream)
@@ -237,6 +242,10 @@ def main(argv=None):
         help="write machine-readable results as CSV to FILE ('-' for stdout)",
     )
     parser.add_argument(
+        "--arena-strategies",
+        help="also benchmark first-fit or memory-schedule (comma-separated)",
+    )
+    parser.add_argument(
         "--json",
         metavar="FILE",
         help="write machine-readable results as JSON to FILE ('-' for stdout)",
@@ -287,6 +296,21 @@ def main(argv=None):
             derived["union_bytes"] = union_metrics["union_baseline_bytes"]
 
         print(format_report(model.name, planner, derived))
+        if args.arena_strategies:
+            strategies = [x.strip() for x in args.arena_strategies.split(",") if x.strip()]
+            invalid = [x for x in strategies if x not in ARENA_STRATEGIES]
+            if invalid:
+                raise RuntimeError("unknown arena strategy: " + ", ".join(invalid))
+            print("\nStrategy             Peak live       Arena       vs first-fit")
+            print("-" * 67)
+            baseline = derived["arena_bytes"]
+            for strategy in strategies:
+                output = run_mode(onnx2c, model, "arena", workdir, strategy)
+                metrics = parse_planner_metrics(output)
+                if len(metrics) != len(PLANNER_METRICS):
+                    raise RuntimeError(f"incomplete metrics for --arena-strategy={strategy}")
+                delta = metrics["arena_bytes"] - baseline
+                print(f"{strategy:<21}{format_bytes(metrics['peak_live_lower_bound']):<16}{format_bytes(metrics['arena_bytes']):<12}{format_bytes(delta)}")
 
         if args.csv:
             row = {"model": model.name, "onnx2c": str(onnx2c)}
