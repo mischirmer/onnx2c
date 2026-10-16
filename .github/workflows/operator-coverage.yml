@@ -62,11 +62,11 @@ jobs:
           path: coverage-out
 
       - name: Configure Pages
-        if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
         uses: actions/configure-pages@v5
 
       - name: Prepare Pages artifact
-        if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
         run: |
           mkdir -p _site
           cp coverage-out/operator-coverage.html _site/index.html
@@ -75,12 +75,12 @@ jobs:
           if [ -d coverage-out/badges ]; then cp -r coverage-out/badges _site/; fi
 
       - name: Upload Pages artifact
-        if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
 
       - name: Deploy to GitHub Pages
-        if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
         id: deployment
         uses: actions/deploy-pages@v4
