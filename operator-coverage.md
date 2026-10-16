@@ -2,20 +2,20 @@
 
 | Metric | Value |
 | --- | --- |
-| ONNX version | unknown (`57b9c6a`) |
-| onnx2c revision | `99e97fa` |
-| Registered operators | 113/198 (57.1%) |
-| Verified operators | 107/198 (54.0%) |
-| Passing backend tests | 607/1615 (37.6%) |
+| ONNX version | 1.19.0 (`57b9c6a`) |
+| onnx2c revision | `8f0c26f` |
+| Registered operators | 112/196 (57.1%) |
+| Verified operators | 106/196 (54.1%) |
+| Passing backend tests | 606/1612 (37.6%) |
 | Infrastructure errors | 5 |
 
-* **Registered**: onnx2c dispatches the operator.
-* **Verified**: at least one single-operator backend test passes.
-* **Passing backend tests**: individual test cases that pass end to end.
+Denominators count the 196 non-deprecated `ai.onnx` operators active at opset 24 (deprecated operators are listed separately below). Backend tests count the 1612 of 1615 discovered cases not exclusively attributable to a deprecated operator.
+
+* **Registered**: onnx2c dispatches the operator. **Verified**: at least one single-operator backend test passes. **Passing backend tests**: individual test cases that pass end to end.
 
 ## Operator compatibility
 
-Every operator of the pinned ONNX specification's default `ai.onnx` domain, classified from its single-operator tests.
+Every active (non-deprecated) operator of the pinned ONNX specification's default `ai.onnx` domain, classified from its single-operator tests.
 
 | Operator | Implemented | Tests passed | Status |
 | --- | --- | --- | --- |
@@ -81,7 +81,6 @@ Every operator of the pinned ONNX specification's default `ai.onnx` domain, clas
 | RotaryEmbedding | no | 0 | Missing |
 | STFT | no | 0 | Missing |
 | Scan | no | 0 | Missing |
-| Scatter | no | 0 | Missing |
 | ScatterElements | no | 0 | Missing |
 | SequenceAt | no | 0 | Missing |
 | SequenceConstruct | no | 0 | Missing |
@@ -214,15 +213,21 @@ Every operator of the pinned ONNX specification's default `ai.onnx` domain, clas
 | ThresholdedRelu | yes | 3 | Passing |
 | Transpose | yes | 7 | Passing |
 | Unsqueeze | yes | 7 | Passing |
-| Upsample | yes | 1 | Passing |
 | Where | yes | 2 | Passing |
 | Xor | yes | 8 | Passing |
 
-Status counts: Missing 85, Failing 3, Partial 28, Blocked 2, Untested 1, Passing 79.
+Status counts: Missing 84, Failing 3, Partial 28, Blocked 2, Untested 1, Passing 78. Legend: **Missing** – no implementation registered; **Untested** – registered, but no single-operator test exists; **Failing** – registered, tests exist, none pass; **Partial** – at least one test passes, at least one fails; **Blocked** – tests exist, but infrastructure errors leave the result unreliable; **Passing** – all applicable tests pass.
 
-Legend: **Missing** – no implementation registered; **Untested** – registered, but no single-operator test exists; **Failing** – registered, tests exist, none pass; **Partial** – at least one test passes, at least one fails; **Blocked** – tests exist, but infrastructure errors leave the result unreliable; **Passing** – all applicable tests pass.
+## Deprecated operators
 
-282 failing test cases exercise several operators at once; they are not attributed to any single implementation.
+Deprecated in the pinned specification and excluded from the denominators above. Reported for completeness only.
+
+| Operator | Implemented | Tests passed | Status |
+| --- | --- | --- | --- |
+| Scatter | no | 0 | Missing |
+| Upsample | yes | 1 | Passing |
+
+Deprecated tests excluded from the active backend-test counts: 3.
 
 ## Failure details
 
@@ -241,5 +246,5 @@ Only operators that are **Failing** or **Blocked**, counted from their single-op
 - Passing the available backend tests does not prove full ONNX compatibility.
 - Operator versions, attributes, data types, and tensor shapes are not exhaustively tested.
 - Multi-operator tests cannot be attributed to a single implementation, so they never change an operator's status.
-- Infrastructure errors are tooling limitations, not compiler failures, and are never counted as passing tests.
+- Deprecated operators are excluded from the denominators; only cases whose operators are all deprecated are dropped. Infrastructure errors are tooling limitations and never counted as passing tests.
 - Detailed per-case diagnostics live in `operator-coverage.json` and the CI artifacts.
