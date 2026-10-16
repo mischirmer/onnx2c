@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: 'operator-coverage'
+  group: operator-coverage
   cancel-in-progress: false
 
 jobs:
@@ -22,33 +22,39 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup
+      - name: Build onnx2c and test generators
         run: |
           sudo apt-get update
-          sudo apt-get install -y libprotobuf-dev protobuf-compiler cmake build-essential
-
-      - name: Build
-        run: |
+          sudo apt-get install -y build-essential cmake libprotobuf-dev protobuf-compiler
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target onnx2c testgen testgen_singlefile -j$(nproc)
+          cmake --build build -j"$(nproc)" --target onnx2c testgen testgen_singlefile
 
-      - name: Run exhaustive coverage
+      - name: Run coverage tool self-tests
+        run: python3 test/operator_coverage/test_coverage.py
+
+      - name: Run coverage campaign
         run: |
-          python3 test/operator_coverage/run_coverage.py \
-            --mode exhaustive \
-            --onnx2c build/onnx2c \
-            --testgen build/test/testgen \
-            --testgen-singlefile build/test/testgen_singlefile \
-            --output-dir coverage-out \
-            --jobs $(nproc) \
-            --timeout 120
+          python3 test/operator_coverage/coverage.py \
+            --repo-root . --output-dir coverage-out \
+            --jobs "$(nproc)" --timeout 120
 
-      - name: Validate report
+      - name: Check report
         run: |
-          test -f coverage-out/operator-coverage.json
-          python3 -c "import json; r=json.load(open('coverage-out/operator-coverage.json')); assert r['validation']['ok'], r['validation']['errors']; assert r['campaign']['complete'], 'exhaustive campaign did not complete'; t=r['totals']; print('campaign complete:  ', r['campaign']['complete']); print('infrastructure clean:', r['campaign'].get('clean')); print('discovered cases:   ', t['discovered_cases']); print('passed cases:       ', t['passed_cases']); print('cases per category: ', t['cases_per_category']); print('verified operators: %d/%d' % (t['default_domain_verified'], t['spec_operators_default_domain']))"
+          python3 - <<'PY'
+          import json
+          r = json.load(open("coverage-out/operator-coverage.json"))
+          assert r["validation"]["ok"], r["validation"]["errors"]
+          assert r["campaign"]["complete"], "campaign did not complete"
+          t = r["totals"]
+          print("active operators:   ", t["spec_operators_active"],
+                "(deprecated: %d)" % t["spec_operators_deprecated"])
+          print("verified operators: ", "%d/%d" % (t["active_verified"],
+                t["spec_operators_active"]))
+          print("active test cases:  ", "%d/%d" % (t["active_passed_cases"],
+                t["active_cases"]))
+          PY
 
-      - name: Upload artifact
+      - name: Upload report artifact
         uses: actions/upload-artifact@v4
         with:
           name: operator-coverage
@@ -70,10 +76,9 @@ jobs:
             git -C "$work" checkout -q --orphan coverage-data
           fi
           cp coverage-out/operator-coverage.md "$work/operator-coverage.md"
-          cp coverage-out/operator-coverage.json "$work/operator-coverage.json"
           rm -rf "$work/badges"
           cp -r coverage-out/badges "$work/badges"
-          git -C "$work" add operator-coverage.md operator-coverage.json badges
+          git -C "$work" add operator-coverage.md badges
           if git -C "$work" diff --cached --quiet; then
             echo "coverage data unchanged"
           else
