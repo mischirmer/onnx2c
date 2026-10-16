@@ -4,17 +4,12 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '0 0 * * 1'
-  push:
-    branches:
-      - master
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
-  group: 'pages'
+  group: 'operator-coverage'
   cancel-in-progress: false
 
 jobs:
@@ -39,14 +34,12 @@ jobs:
 
       - name: Run exhaustive coverage
         run: |
-          PAGES_BASE="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
           python3 test/operator_coverage/run_coverage.py \
             --mode exhaustive \
             --onnx2c build/onnx2c \
             --testgen build/test/testgen \
             --testgen-singlefile build/test/testgen_singlefile \
             --output-dir coverage-out \
-            --pages-base-url "$PAGES_BASE" \
             --jobs $(nproc) \
             --timeout 120
 
@@ -61,26 +54,31 @@ jobs:
           name: operator-coverage
           path: coverage-out
 
-      - name: Configure Pages
+      - name: Publish coverage data
         if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
-        uses: actions/configure-pages@v5
-
-      - name: Prepare Pages artifact
-        if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p _site
-          cp coverage-out/operator-coverage.html _site/index.html
-          cp coverage-out/operator-coverage.json _site/
-          cp coverage-out/operator-coverage.md _site/
-          if [ -d coverage-out/badges ]; then cp -r coverage-out/badges _site/; fi
-
-      - name: Upload Pages artifact
-        if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-
-      - name: Deploy to GitHub Pages
-        if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
-        id: deployment
-        uses: actions/deploy-pages@v4
+          set -euo pipefail
+          remote="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          work="$(mktemp -d)"
+          git -C "$work" init -q
+          git -C "$work" remote add origin "$remote"
+          if git -C "$work" fetch -q --depth 1 origin coverage-data; then
+            git -C "$work" checkout -q -b coverage-data FETCH_HEAD
+          else
+            git -C "$work" checkout -q --orphan coverage-data
+          fi
+          cp coverage-out/operator-coverage.md "$work/operator-coverage.md"
+          cp coverage-out/operator-coverage.json "$work/operator-coverage.json"
+          rm -rf "$work/badges"
+          cp -r coverage-out/badges "$work/badges"
+          git -C "$work" add operator-coverage.md operator-coverage.json badges
+          if git -C "$work" diff --cached --quiet; then
+            echo "coverage data unchanged"
+          else
+            git -C "$work" -c user.name="github-actions[bot]" \
+              -c user.email="github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "Update operator coverage data [skip ci]"
+            git -C "$work" push -q origin coverage-data
+          fi

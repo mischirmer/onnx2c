@@ -245,7 +245,7 @@ def _case_result(operators, outcome, operator_count=None, mode="split",
 class AggregationTest(unittest.TestCase):
     def setUp(self):
         self.spec = {"ai.onnx": {"Abs": 13, "Conv": 11, "Relu": 14}}
-        self.registered = ["Abs", "Conv", "QLinearAdd"]
+        self.registered = ["Abs", "Conv", "Relu", "QLinearAdd"]
 
     def test_status_transitions(self):
         results = [
@@ -259,13 +259,13 @@ class AggregationTest(unittest.TestCase):
             self.spec, self.registered, results)
         by_name = {(row["domain"], row["operator"]): row for row in operators}
         self.assertEqual(by_name[("ai.onnx", "Abs")]["status"],
-                         report_module.STATUS_FULLY)
+                         report_module.CAT_PASSING)
         self.assertEqual(by_name[("ai.onnx", "Conv")]["status"],
-                         report_module.STATUS_PARTIAL)
+                         report_module.CAT_PARTIAL)
         self.assertEqual(by_name[("ai.onnx", "Relu")]["status"],
-                         report_module.STATUS_NO_PASS)
+                         report_module.CAT_FAILING)
         self.assertEqual(totals["spec_operators_default_domain"], 3)
-        self.assertEqual(totals["registered_in_spec"], 2)
+        self.assertEqual(totals["registered_in_spec"], 3)
         self.assertEqual(totals["registered_non_spec"], 1)
         self.assertEqual(totals["default_domain_verified"], 2)
 
@@ -314,6 +314,86 @@ class AggregationTest(unittest.TestCase):
         self.assertEqual(totals["cross_check_mode_sensitive"], 1)
 
 
+class ClassificationTest(unittest.TestCase):
+    def test_rules_are_mutually_exclusive(self):
+        classify = report_module.classify
+        self.assertEqual(classify(False, 0, 0, 0, 0),
+                         report_module.CAT_MISSING)
+        self.assertEqual(classify(True, 0, 0, 0, 0),
+                         report_module.CAT_UNTESTED)
+        self.assertEqual(classify(True, 3, 0, 2, 0),
+                         report_module.CAT_FAILING)
+        self.assertEqual(classify(True, 3, 1, 2, 0),
+                         report_module.CAT_PARTIAL)
+        self.assertEqual(classify(True, 3, 3, 0, 0),
+                         report_module.CAT_PASSING)
+        self.assertEqual(classify(True, 3, 0, 0, 2),
+                         report_module.CAT_BLOCKED)
+
+    def test_shared_failures_never_blame_an_operator(self):
+        spec = {"ai.onnx": {"Abs": 13, "Conv": 11, "Sin": 13}}
+        registered = ["Abs", "Conv"]
+        results = [
+            _case_result([("ai.onnx", "Abs")], runner.PASS),
+            _case_result([("ai.onnx", "Abs"), ("ai.onnx", "Conv")],
+                         runner.NUMERICAL_MISMATCH),
+        ]
+        operators, _totals = report_module.aggregate(spec, registered, results)
+        by_name = {row["operator"]: row for row in operators}
+        self.assertEqual(by_name["Abs"]["status"], report_module.CAT_PASSING)
+        self.assertEqual(by_name["Abs"]["solo_cases"], 1)
+        self.assertEqual(by_name["Abs"]["shared_cases"], 1)
+        self.assertEqual(by_name["Conv"]["status"], report_module.CAT_UNTESTED)
+        self.assertEqual(by_name["Conv"]["shared_cases"], 1)
+
+    def test_unrunnable_solo_test_is_blocked_not_passing(self):
+        spec = {"ai.onnx": {"Abs": 13}}
+        results = [_case_result([("ai.onnx", "Abs")], runner.INFRASTRUCTURE_ERROR)]
+        operators, _totals = report_module.aggregate(spec, ["Abs"], results)
+        self.assertEqual(operators[0]["status"], report_module.CAT_BLOCKED)
+
+    def test_category_totals_sum_to_spec_operators(self):
+        spec = {"ai.onnx": {"Abs": 13, "Conv": 11, "Relu": 14, "Gemm": 13}}
+        registered = ["Abs", "Conv", "Relu"]
+        results = [
+            _case_result([("ai.onnx", "Abs")], runner.PASS),
+            _case_result([("ai.onnx", "Conv")], runner.PASS),
+            _case_result([("ai.onnx", "Conv")], runner.NUMERICAL_MISMATCH),
+            _case_result([("ai.onnx", "Relu")], runner.PASS),
+            _case_result([("ai.onnx", "Relu")], runner.INFRASTRUCTURE_ERROR),
+        ]
+        _operators, totals = report_module.aggregate(spec, registered, results)
+        self.assertEqual(totals["operators_missing"], 1)
+        self.assertEqual(totals["operators_passing"], 1)
+        self.assertEqual(totals["operators_partial"], 1)
+        self.assertEqual(totals["operators_blocked"], 1)
+        self.assertEqual(totals["operators_with_passing_test"], 2)
+        total = sum(totals[key] for key in (
+            "operators_missing", "operators_failing", "operators_partial",
+            "operators_blocked", "operators_untested", "operators_passing"))
+        self.assertEqual(total, totals["spec_operators_default_domain"])
+
+
+class ReportSortingTest(unittest.TestCase):
+    def test_matrix_orders_by_severity_then_name(self):
+        spec = {"ai.onnx": {"Zebra": 13, "Alpha": 13, "Beta": 13,
+                            "Gamma": 13}}
+        registered = ["Zebra", "Gamma"]
+        results = [
+            _case_result([("ai.onnx", "Zebra")], runner.PASS),
+            _case_result([("ai.onnx", "Gamma")], runner.ONNX_TO_C_FAILURE),
+        ]
+        report = report_module.build_report(
+            {"complete": True}, spec, registered, results)
+        rows = report_module._default_domain_rows(report)
+        names = [row["operator"] for row in rows]
+        statuses = [row["status"] for row in rows]
+        self.assertEqual(names, ["Alpha", "Beta", "Gamma", "Zebra"])
+        self.assertEqual(statuses, [
+            report_module.CAT_MISSING, report_module.CAT_MISSING,
+            report_module.CAT_FAILING, report_module.CAT_PASSING])
+
+
 class ReportValidationTest(unittest.TestCase):
     def _report(self):
         spec = {"ai.onnx": {"Abs": 13, "Conv": 11}}
@@ -344,25 +424,24 @@ class ReportValidationTest(unittest.TestCase):
             self.assertEqual(payload["schemaVersion"], 1)
             self.assertIn("message", payload)
 
-    def test_markdown_and_html_reports_render(self):
+    def test_markdown_report_renders_compact_overview(self):
         report = self._report()
         with tempfile.TemporaryDirectory() as directory:
             markdown_path = os.path.join(directory, "report.md")
-            html_path = os.path.join(directory, "report.html")
             report_module.write_markdown(report, markdown_path)
-            report_module.write_html(report, html_path,
-                                     pages_base_url="https://example.org/x")
             with open(markdown_path, encoding="utf-8") as handle:
                 markdown = handle.read()
-            with open(html_path, encoding="utf-8") as handle:
-                document = handle.read()
-        self.assertIn("# ONNX operator coverage", markdown)
-        self.assertIn("| Operator | Domain |", markdown)
-        self.assertIn("### Failing test cases", markdown)
-        self.assertTrue(document.startswith("<!DOCTYPE html>"))
-        self.assertIn("<table>", document)
-        self.assertIn("img.shields.io/endpoint", document)
-        self.assertIn("Conv", document)
+        self.assertIn("# ONNX operator compatibility", markdown)
+        self.assertIn("| Metric | Value |", markdown)
+        self.assertIn("## Operator compatibility", markdown)
+        self.assertIn("| Operator | Implemented | Tests passed | Status |",
+                      markdown)
+        self.assertIn("## Failure details", markdown)
+        self.assertIn("ONNX\u2192C", markdown)
+        self.assertIn("Infrastructure", markdown)
+        self.assertIn("## Coverage limitations", markdown)
+        self.assertIn("| Conv |", markdown)
+        self.assertIn("Failing", markdown)
 
 
 class OutcomeMappingTest(unittest.TestCase):

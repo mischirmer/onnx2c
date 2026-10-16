@@ -1,9 +1,9 @@
 onnx2c
 ======
 
-[![Registered ONNX operators](https://img.shields.io/endpoint?url=https://mischirmer.github.io/onnx2c/badges/registered.json)](https://mischirmer.github.io/onnx2c/)
-[![Verified ONNX operators](https://img.shields.io/endpoint?url=https://mischirmer.github.io/onnx2c/badges/verified.json)](https://mischirmer.github.io/onnx2c/)
-[![Passing ONNX backend tests](https://img.shields.io/endpoint?url=https://mischirmer.github.io/onnx2c/badges/tests.json)](https://mischirmer.github.io/onnx2c/)
+[![Registered ONNX operators](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/mischirmer/onnx2c/coverage-data/badges/registered.json)](https://github.com/mischirmer/onnx2c/blob/coverage-data/operator-coverage.md)
+[![Verified ONNX operators](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/mischirmer/onnx2c/coverage-data/badges/verified.json)](https://github.com/mischirmer/onnx2c/blob/coverage-data/operator-coverage.md)
+[![Passing ONNX backend tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/mischirmer/onnx2c/coverage-data/badges/tests.json)](https://github.com/mischirmer/onnx2c/blob/coverage-data/operator-coverage.md)
 
 Onnx2c is a [ONNX](https://onnx.ai) to C compiler. It will read an ONNX file,
 and generate C code to be included in your project.
@@ -23,7 +23,7 @@ project, then joining the two with onnx2c should be easy.
 
 To make all of the above easier to achieve, there are some non-goals for onnx2c:
 
- - ONNX specification coverage. The status is tracked automatically: the badges above count operators *registered* by onnx2c, operators *verified* by at least one upstream backend test, and the fraction of discovered backend test cases that pass. Registered only means dispatch exists, not that the operator is correct. See the [coverage report](https://mischirmer.github.io/onnx2c/) for the full per-operator breakdown and known failures.
+ - ONNX specification coverage. The status is tracked automatically: the badges above count operators *registered* by onnx2c, operators *verified* by at least one upstream backend test, and the fraction of discovered backend test cases that pass. Registered only means dispatch exists, not that the operator is correct. See the [coverage report](https://github.com/mischirmer/onnx2c/blob/coverage-data/operator-coverage.md) for the full per-operator breakdown and known failures.
  - accelerators
  - backpropagation (i.e. training)
 

@@ -199,10 +199,8 @@ def build_parser():
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--json", default=None)
     parser.add_argument("--markdown", default=None)
-    parser.add_argument("--html", default=None)
     parser.add_argument("--badges-dir", default=None)
     parser.add_argument("--work-dir", default=None)
-    parser.add_argument("--pages-base-url", default=None)
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--keep-work", action="store_true")
@@ -246,8 +244,6 @@ def _resolve_paths(args):
                                           "operator-coverage.json"),
         "markdown": args.markdown or os.path.join(
             output_dir, "operator-coverage.md"),
-        "html": args.html or os.path.join(output_dir,
-                                          "operator-coverage.html"),
         "badges_dir": args.badges_dir or os.path.join(output_dir, "badges"),
     }
     return paths
@@ -388,10 +384,7 @@ def main(argv=None):
 
     os.makedirs(paths["output_dir"], exist_ok=True)
     report_module.write_json(report, paths["json"])
-    report_module.write_markdown(report, paths["markdown"],
-                                 pages_base_url=args.pages_base_url)
-    report_module.write_html(report, paths["html"],
-                             pages_base_url=args.pages_base_url)
+    report_module.write_markdown(report, paths["markdown"])
     report_module.write_badges(report, paths["badges_dir"])
 
     if args.queue_report:
@@ -434,7 +427,6 @@ def _print_summary(report, paths):
             % totals.get("cross_check_mode_sensitive", 0))
     sys.stderr.write("report: %s\n" % paths["json"])
     sys.stderr.write("markdown: %s\n" % paths["markdown"])
-    sys.stderr.write("html: %s\n" % paths["html"])
 
 
 def _write_queue_status(report, repo_root):
