@@ -441,6 +441,14 @@ local_node_test(gemm_CMxN_transA_transB)
 local_node_test(gemm_C1xN_transA_transB)
 local_node_test(gemm_CMx1_transA_transB)
 local_node_test(gemm_CN_transA_transB)
+local_node_test(gemm_CN_square_transB)
+
+# Regression tests for the fold_casts optimisation pass (consumer list
+# maintenance and single deletion of the folded Cast output).
+# These use ONNX_type_test (model compiled by the onnx2c binary):
+# testgen_singlefile does not run fold_casts.
+ONNX_type_test(foldcast_transpose ${ONNX_LOCAL_NODE_TEST_DATA_DIR}/test_foldcast_transpose local_node_foldcast_transpose 0.00002 0)
+ONNX_type_test(foldcast_two_consumers ${ONNX_LOCAL_NODE_TEST_DATA_DIR}/test_foldcast_two_consumers local_node_foldcast_two_consumers 0.00002 0)
 
 local_node_test(matmul_2x3_3x4)
 local_node_test(matmul_5x2x3_5x3x4)
@@ -461,6 +469,11 @@ local_node_test(matmul_2x3x3x4_1x4x5)
 
 ONNX_backend_node_test(globalaveragepool)
 ONNX_backend_node_test(globalaveragepool_precomputed)
+
+ONNX_backend_node_test(gru_batchwise)
+ONNX_backend_node_test(gru_defaults)
+ONNX_backend_node_test(gru_seq_length)
+ONNX_backend_node_test(gru_with_initial_bias)
 
 ONNX_backend_node_test(greater)
 ONNX_backend_node_test(greater_equal)
@@ -512,11 +525,24 @@ ONNX_backend_node_test(less_bcast)
 ONNX_backend_node_test(less_equal_bcast)
 #ONNX_backend_node_test(less_equal_expanded)
 
+local_node_test(linearclassifier_binary_int)
+local_node_test(linearclassifier_binary_logistic)
+local_node_test(linearclassifier_multiclass)
+local_node_test(linearclassifier_multiclass_logistic)
+local_node_test(linearclassifier_multiclass_softmax)
+local_node_test(linearclassifier_multiclass_softmax_zero)
+
 ONNX_backend_node_test(log)
 ONNX_backend_node_test(log_example)
 
 ONNX_backend_node_test_with_accuracy(lrn 0.005)
 ONNX_backend_node_test_with_accuracy(lrn_default 0.005)
+
+local_node_test(gru_bidirectional)
+local_node_test(gru_lbr1_initial_h)
+local_node_test(gru_layout1_initial_h)
+local_node_test(gru_reverse)
+local_node_test(gru_y_only)
 
 ONNX_backend_node_test(lstm_batchwise)
 ONNX_backend_node_test(lstm_defaults)

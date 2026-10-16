@@ -406,9 +406,11 @@ int64_t Graph::onnx_ir_version(void)
 #include "nodes/gemm.h"
 #include "nodes/globalaveragepool.h"
 #include "nodes/globalmaxpool.h"
+#include "nodes/gru.h"
 #include "nodes/identity.h"
 #include "nodes/instancenorm.h"
 #include "nodes/layernorm.h"
+#include "nodes/linearclassifier.h"
 #include "nodes/lrn.h"
 #include "nodes/lstm.h"
 #include "nodes/matmul.h"
@@ -489,6 +491,7 @@ Node* Graph::createNode(const onnx::NodeProto& onnx_node)
 	if (opName == "GlobalMaxPool") return new GlobalMaxPool;
 	if (opName == "Greater") return new Elementwise_2("Greater");
 	if (opName == "GreaterOrEqual") return new Elementwise_2("GreaterOrEqual");
+	if (opName == "GRU") return new GRU;
 	if (opName == "HardSigmoid") return new Elementwise("HardSigmoid");
 	if (opName == "HardSwish") return new Elementwise("HardSwish");
 	if (opName == "Identity") return new Identity;
@@ -497,6 +500,7 @@ Node* Graph::createNode(const onnx::NodeProto& onnx_node)
 	if (opName == "LeakyRelu") return new Elementwise("LeakyRelu");
 	if (opName == "Less") return new Elementwise_2("Less");
 	if (opName == "LessOrEqual") return new Elementwise_2("LessOrEqual");
+	if (opName == "LinearClassifier") return new LinearClassifier;
 	if (opName == "Log") return new Elementwise("Log");
 	if (opName == "LogSoftmax") return new Softmax("LogSoftmax");
 	if (opName == "LRN") return new LRN;
