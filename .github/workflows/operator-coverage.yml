@@ -1,0 +1,86 @@
+name: Operator Coverage
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 1'
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages'
+  cancel-in-progress: false
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libprotobuf-dev protobuf-compiler cmake build-essential
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target onnx2c testgen testgen_singlefile -j$(nproc)
+
+      - name: Run exhaustive coverage
+        run: |
+          PAGES_BASE="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}"
+          python3 test/operator_coverage/run_coverage.py \
+            --mode exhaustive \
+            --onnx2c build/onnx2c \
+            --testgen build/test/testgen \
+            --testgen-singlefile build/test/testgen_singlefile \
+            --output-dir coverage-out \
+            --pages-base-url "$PAGES_BASE" \
+            --jobs $(nproc) \
+            --timeout 120
+
+      - name: Validate report
+        run: |
+          test -f coverage-out/operator-coverage.json
+          python3 -c "import json; r=json.load(open('coverage-out/operator-coverage.json')); assert r['validation']['ok'], r['validation']['errors']; assert r['campaign']['complete'], 'exhaustive campaign did not complete'; t=r['totals']; print('campaign complete:  ', r['campaign']['complete']); print('infrastructure clean:', r['campaign'].get('clean')); print('discovered cases:   ', t['discovered_cases']); print('passed cases:       ', t['passed_cases']); print('cases per category: ', t['cases_per_category']); print('verified operators: %d/%d' % (t['default_domain_verified'], t['spec_operators_default_domain']))"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: operator-coverage
+          path: coverage-out
+
+      - name: Configure Pages
+        if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        uses: actions/configure-pages@v5
+
+      - name: Prepare Pages artifact
+        if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        run: |
+          mkdir -p _site
+          cp coverage-out/operator-coverage.html _site/index.html
+          cp coverage-out/operator-coverage.json _site/
+          cp coverage-out/operator-coverage.md _site/
+          if [ -d coverage-out/badges ]; then cp -r coverage-out/badges _site/; fi
+
+      - name: Upload Pages artifact
+        if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        if: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+        id: deployment
+        uses: actions/deploy-pages@v4
