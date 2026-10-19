@@ -3,7 +3,7 @@
 | Metric | Value |
 | --- | --- |
 | ONNX version | 1.19.0 (`57b9c6a`) |
-| onnx2c revision | `8f0c26f` |
+| onnx2c revision | `aad97da` |
 | Registered operators | 112/196 (57.1%) |
 | Verified operators | 106/196 (54.1%) |
 | Passing backend tests | 606/1612 (37.6%) |
